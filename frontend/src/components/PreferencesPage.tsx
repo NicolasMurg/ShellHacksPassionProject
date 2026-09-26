@@ -6,10 +6,11 @@ import { Button, Field, Notice, Segmented, inputClass } from './ui'
 
 /** The Preferences tab: the sign-in page when signed out, personal settings when signed in. */
 export function PreferencesPage({ onOpenMap }: { onOpenMap: () => void }) {
-  const { user } = useAuth()
+  const { user, error } = useAuth()
   return (
     <section aria-label="Preferences" className="absolute inset-0 z-40 overflow-y-auto overscroll-contain bg-ink">
       <div className="mx-auto flex min-h-full w-full max-w-md flex-col gap-5 px-4 pb-8 pt-[max(32px,env(safe-area-inset-top))]">
+        {error && <Notice tone="error">{error}</Notice>}
         {user ? <Preferences key={user.id} user={user} onOpenMap={onOpenMap} /> : <SignIn onOpenMap={onOpenMap} />}
       </div>
     </section>
@@ -32,6 +33,8 @@ function SignIn({ onOpenMap }: { onOpenMap: () => void }) {
   const { login } = useAuth()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [registering, setRegistering] = useState(false)
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
 
@@ -40,7 +43,7 @@ function SignIn({ onOpenMap }: { onOpenMap: () => void }) {
     setBusy(true)
     setError(undefined)
     try {
-      await login(name, email) // on success this page switches to the preferences view
+      await login(email, password, registering ? name : undefined) // on success this page switches to the preferences view
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -58,19 +61,25 @@ function SignIn({ onOpenMap }: { onOpenMap: () => void }) {
         </span>
       </div>
 
-      <Card title="Sign in" hint="Get arrival times based on your own walking pace, and save your own drop-off spots.">
+      <Card title={registering ? "Create account" : "Sign in"} hint="Get arrival times based on your own walking pace, and save your own drop-off spots.">
         <form onSubmit={submit} className="flex flex-col gap-3.5">
-          <Field label="Name">
+          {registering && <Field label="Name">
             <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} required autoComplete="name" />
-          </Field>
+          </Field>}
           <Field label="Email">
             <input className={inputClass} type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" />
           </Field>
+          <Field label="Password">
+            <input className={inputClass} type="password" minLength={8} maxLength={128} value={password} onChange={e => setPassword(e.target.value)} required autoComplete={registering ? 'new-password' : 'current-password'} />
+          </Field>
           {error && <Notice tone="error">{error}</Notice>}
           <Button type="submit" variant="primary" disabled={busy}>
-            {busy ? 'Signing in…' : 'Sign in'}
+            {busy ? 'Please wait…' : registering ? 'Create account' : 'Sign in'}
           </Button>
         </form>
+        <Button variant="quiet" onClick={() => { setRegistering(v => !v); setError(undefined) }}>
+          {registering ? 'Already have an account? Sign in' : 'New here? Create an account'}
+        </Button>
       </Card>
 
       <div className="flex flex-col items-center gap-1 text-center">
@@ -83,13 +92,14 @@ function SignIn({ onOpenMap }: { onOpenMap: () => void }) {
   )
 }
 
-const PROFILE_FIELDS = ['pace', 'age', 'heightCm', 'mobility', 'learnedFactor'] as const
+const PROFILE_FIELDS = ['pace', 'age', 'heightCm', 'mobility'] as const
 
 function Preferences({ user, onOpenMap }: { user: User; onOpenMap: () => void }) {
   const { logout, saveProfile } = useAuth()
   const [draft, setDraft] = useState<WalkingProfile>(user.profile)
   const [busy, setBusy] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [error, setError] = useState<string>()
 
   const dirty = PROFILE_FIELDS.some((k) => draft[k] !== user.profile[k])
   const num = (v: string) => (v === '' ? undefined : Number(v))
@@ -104,7 +114,8 @@ function Preferences({ user, onOpenMap }: { user: User; onOpenMap: () => void })
     try {
       await saveProfile(draft)
       setSaved(true)
-    } finally {
+      setError(undefined)
+    } catch (e) { setError((e as Error).message) } finally {
       setBusy(false)
     }
   }
@@ -155,11 +166,7 @@ function Preferences({ user, onOpenMap }: { user: User; onOpenMap: () => void })
             </span>
             <span className="text-lg font-extrabold text-accent">{walkingSpeed(draft).toFixed(2)} m/s</span>
           </div>
-          {draft.learnedFactor !== 1 && (
-            <Button variant="quiet" className="h-8 self-start px-0 text-sm" onClick={() => change({ learnedFactor: 1 })}>
-              Reset learned pace
-            </Button>
-          )}
+
         </Card>
 
         <Card title="Getting around">
@@ -192,6 +199,7 @@ function Preferences({ user, onOpenMap }: { user: User; onOpenMap: () => void })
           </div>
         </Card>
 
+        {error && <Notice tone="error">{error}</Notice>}
         {saved && !dirty && <Notice tone="success">Saved. Arrival times on the map now use these settings.</Notice>}
         <Button type="submit" variant="primary" disabled={busy || !dirty}>
           {busy ? 'Saving…' : 'Save preferences'}

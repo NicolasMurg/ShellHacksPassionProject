@@ -1,6 +1,6 @@
 import { AdvancedMarker, Circle, Map, Polygon, Polyline, useMap } from '@vis.gl/react-google-maps'
 import { useEffect, useRef, useState } from 'react'
-import { CAMPUS_CENTER } from '../data/campus'
+import { CAMPUS_CENTER } from '../data/mapDefaults'
 import { centroid, distanceMeters } from '../geo'
 import { MAP_STYLES, type MapLayers } from '../mapLayers'
 import type { Building, Entrance, LatLng, RoadClosure, Zone } from '../types'

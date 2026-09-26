@@ -1,51 +1,67 @@
 import { Router } from "express";
 import { rateLimit } from "express-rate-limit";
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { computeRoute, searchPlaces } from "../lib/google";
 import { HttpError, id, objectId, point } from "../lib/validation";
-import { requireAuth } from "../middleware/auth";
+import { optionalAuth, publicUser, requireAuth } from "../middleware/auth";
+import { parseDestination } from "../lib/search";
+import { asLatLng, paceProfile, rankPlan } from "../lib/planner";
+import { distanceMeters } from "../../../shared/geo";
+import { learn } from "../lib/walking";
 
 export const googleRoutes = Router();
-const googleLimit = rateLimit({ windowMs: 60000, limit: 30, standardHeaders: "draft-8", legacyHeaders: false,
-  message: { error: "Too many Google Maps requests" } });
+const googleLimit = rateLimit({ windowMs: 60000, limit: 60, standardHeaders: "draft-8", legacyHeaders: false,
+  message: { error: "Too many map requests. Please try again shortly." } });
 googleRoutes.get("/search", googleLimit, async (req, res) => {
   const { q } = z.object({ q: z.string().trim().min(1).max(200) }).parse(req.query);
-  res.json(await searchPlaces(q));
-});
-googleRoutes.post("/plan", requireAuth, googleLimit, async (req, res) => {
-  const input = z.object({ origin: point, destination: point.optional(), zoneId: id.optional(),
-    travelMode: z.enum(["WALK", "DRIVE"]).default("WALK") }).strict()
-    .refine(v => Boolean(v.destination) !== Boolean(v.zoneId), "Provide exactly one of destination or zoneId").parse(req.body);
-  const segments = [];
-  if (input.zoneId) {
-    const zone = await prisma.zone.findFirst({ where: { id: input.zoneId, hidden: false,
-      OR: [{ ownerId: null }, { ownerId: { isSet: false } }, { ownerId: res.locals.user.id }] }, include: { entrance: true } });
-    if (!zone) throw new HttpError(404, "Zone not found");
-    const stop = point.parse(zone.stopPoint);
-    segments.push(await computeRoute(input.origin, stop, "DRIVE"));
-    segments.push(await computeRoute(stop, point.parse(zone.entrance.location), "WALK"));
-  } else {
-    segments.push(await computeRoute(input.origin, input.destination!, input.travelMode));
+  const buildings = await prisma.building.findMany({ include: { entrances: true } });
+  try { res.json(parseDestination(q, buildings)); return; } catch { /* Try campus Places search. */ }
+  const places = await searchPlaces(q);
+  for (const place of places) {
+    const location = asLatLng(point.parse(place.location));
+    const nearest = buildings.map(building => ({ building, distance: distanceMeters(location, asLatLng(building.location)) }))
+      .sort((a, b) => a.distance - b.distance)[0];
+    if (nearest && nearest.distance <= 150) {
+      res.json({ building: nearest.building, room: q.match(/\b([a-z]?\d{2,4}[a-z]?)\b/i)?.[1]?.toUpperCase() ?? "",
+        matchedBy: "nearby-place", attributions: place.attributions });
+      return;
+    }
   }
-  const now = new Date();
-  const closures = await prisma.routeRestriction.findMany({ where: { AND: [
-    { OR: [{ startsAt: null }, { startsAt: { isSet: false } }, { startsAt: { lte: now } }] },
-    { OR: [{ endsAt: null }, { endsAt: { isSet: false } }, { endsAt: { gt: now } }] },
-  ] } });
-  // Persist only an ownership record; do not cache Google's route content.
-  const trip = await prisma.trip.create({ data: { userId: res.locals.user.id } });
-  res.json({ tripId: trip.id, segments, closures, accessibilityVerified: false,
-    warnings: ["Walking directions may be missing sidewalks or pedestrian paths.",
-      "Accessibility preferences and local closure reports are not enforced by this route.",
-      ...segments.flatMap(s => s.warnings)] });
+  throw new HttpError(404, "Couldn't match that destination to a supported campus building. Try GC 150 or Green Library.");
+});
+googleRoutes.post("/plan", optionalAuth, googleLimit, async (req, res) => {
+  const input = z.object({ buildingId: id, room: z.string().trim().max(100).default(""),
+    kind: z.enum(["DROPOFF", "PICKUP", "WALK"]), stepFree: z.boolean().optional(), origin: point.optional() }).strict().parse(req.body);
+  res.json(await rankPlan(input, res.locals.user));
+});
+googleRoutes.post("/route", googleLimit, async (req, res) => {
+  const input = z.object({ origin: point, destination: point, travelMode: z.enum(["WALK", "DRIVE"]) }).strict().parse(req.body);
+  res.json(await computeRoute(input.origin, input.destination, input.travelMode));
 });
 googleRoutes.post("/trips/feedback", requireAuth, async (req, res) => {
   const input = z.object({ tripId: objectId, rating: z.number().int().min(1).max(5),
-    comment: z.string().trim().max(2000).optional() }).strict().parse(req.body);
-  if (!await prisma.trip.findFirst({ where: { id: input.tripId, userId: res.locals.user.id } })) {
-    throw new HttpError(404, "Trip not found");
+    comment: z.string().trim().max(2000).optional(), paceFeedback: z.enum(["faster", "right", "slower"]).optional() }).strict().parse(req.body);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const result = await prisma.$transaction(async tx => {
+        const trip = await tx.trip.findFirst({ where: { id: input.tripId, userId: res.locals.user.id }, include: { feedback: true } });
+        if (!trip) throw new HttpError(404, "Trip not found");
+        let user = await tx.user.findUniqueOrThrow({ where: { id: res.locals.user.id }, select: publicUser });
+        // A trip teaches the model once. Retries or repeated button presses cannot compound learning.
+        if (input.paceFeedback && !trip.feedback?.paceFeedback) {
+          const learnedFactor = learn(paceProfile(user.profile)!, input.paceFeedback).learnedFactor;
+          user = await tx.user.update({ where: { id: user.id }, data: { profile: { update: { learnedFactor } } }, select: publicUser });
+        }
+        const feedback = await tx.tripFeedback.upsert({ where: { tripId: trip.id }, create: input,
+          update: { rating: input.rating, comment: input.comment ?? null, paceFeedback: trip.feedback?.paceFeedback ?? input.paceFeedback } });
+        return { user, feedback };
+      });
+      res.json(result); return;
+    } catch (error) {
+      if (attempt < 2 && error instanceof Prisma.PrismaClientKnownRequestError && ["P2034", "P2002"].includes(error.code)) continue;
+      throw error;
+    }
   }
-  res.json(await prisma.tripFeedback.upsert({ where: { tripId: input.tripId }, create: input,
-    update: { rating: input.rating, comment: input.comment ?? null } }));
 });

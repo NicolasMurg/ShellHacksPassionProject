@@ -27,6 +27,11 @@ enum RestrictionType {
 }
 
 type WalkingProfile {
+  pace                      String  @default("average")
+  age                       Int?
+  heightCm                  Int?
+  mobility                  String  @default("none")
+  learnedFactor             Float   @default(1)
   avoidStairs               Boolean
   requireCurbCuts           Boolean
   avoidSteepSlopes          Boolean
@@ -72,6 +77,7 @@ model Entrance {
   location   GeoPoint
   accessible Boolean
   hours      String?
+  rooms      String[] @default([])
 
   zones Zone[]
 }
@@ -85,8 +91,9 @@ model Zone {
   entranceId String   @db.ObjectId
   entrance   Entrance @relation(fields: [entranceId], references: [id])
 
-  name  String
-  kinds ZoneKind[]
+  name   String
+  kinds  ZoneKind[]
+  source String     @default("design")
 
   polygon   GeoPoint[]
   stopPoint GeoPoint
@@ -149,10 +156,11 @@ model Trip {
 }
 
 model TripFeedback {
-  id        String   @id @default(auto()) @map("_id") @db.ObjectId
-  tripId    String   @unique @db.ObjectId
-  trip      Trip     @relation(fields: [tripId], references: [id])
-  rating    Int
-  comment   String?
-  createdAt DateTime @default(now())
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  tripId       String   @unique @db.ObjectId
+  trip         Trip     @relation(fields: [tripId], references: [id])
+  rating       Int
+  paceFeedback String?
+  comment      String?
+  createdAt    DateTime @default(now())
 }

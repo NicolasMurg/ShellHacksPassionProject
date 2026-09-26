@@ -1,25 +1,24 @@
+import { createHash } from "node:crypto";
 import { prisma } from "../src/lib/prisma";
+import { BUILDINGS } from "./campus";
 
-// Synthetic demo locations near FIU. These are not verified accessibility data.
+export const entranceId = (slug: string) => createHash("sha256").update(`fiu-entrance:${slug}`).digest("hex").slice(0, 24);
 export async function seed() {
-  await prisma.building.upsert({ where: { id: "demo-building" }, update: {}, create: {
-    id: "demo-building", code: "DEMO", name: "Demo building (unverified)",
-    location: { type: "Point", coordinates: [-80.3732, 25.7562] },
-  } });
-  await prisma.entrance.upsert({ where: { id: "000000000000000000000001" }, update: {}, create: {
-    id: "000000000000000000000001", buildingId: "demo-building", label: "Demo entrance (unverified)",
-    accessible: false, location: { type: "Point", coordinates: [-80.3733, 25.7562] },
-  } });
-  await prisma.zone.upsert({ where: { id: "demo-zone" }, update: {}, create: {
-    id: "demo-zone", buildingId: "demo-building", entranceId: "000000000000000000000001",
-    name: "Demo pickup/dropoff (unverified)", kinds: ["BOTH"], ownerId: null,
-    polygon: [[-80.3735, 25.7561], [-80.3734, 25.7561], [-80.3734, 25.7563], [-80.3735, 25.7563]]
-      .map(coordinates => ({ type: "Point", coordinates })),
-    stopPoint: { type: "Point", coordinates: [-80.37345, 25.7562] }, rooms: [],
-  } });
+  for (const b of BUILDINGS) {
+    await prisma.building.upsert({ where: { id: b.id }, update: {}, create: {
+      id: b.id, code: b.code, name: b.name,
+      location: { type: "Point", coordinates: [b.location.lng, b.location.lat] },
+    } });
+    for (const e of b.entrances) {
+      await prisma.entrance.upsert({ where: { id: entranceId(e.id) }, update: {}, create: {
+        id: entranceId(e.id), buildingId: b.id, label: e.label, accessible: e.accessible, rooms: e.rooms,
+        location: { type: "Point", coordinates: [e.location.lng, e.location.lat] },
+      } });
+    }
+  }
 }
 if (import.meta.main) {
-  try { await seed(); console.log("Demo seed complete (existing records preserved)"); }
+  try { await seed(); console.log("FIU building/entrance seed complete; existing records preserved. Run bun run db:curbs to generate shared zones."); }
   catch (error) { console.error(error instanceof Error ? error.message : "Seed failed"); process.exitCode = 1; }
   finally { await prisma.$disconnect(); }
 }

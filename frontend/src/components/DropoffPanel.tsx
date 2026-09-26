@@ -29,11 +29,12 @@ type Props = {
   onSearch: (text: string) => void
   onClear: () => void
   onSignIn: () => void
-  onFeedback: (f: 'faster' | 'right' | 'slower') => void
+  onFeedback: (f: 'faster' | 'right' | 'slower') => Promise<void>
   error?: string
   /** Drive to the selected curb, from GPS or (without GPS) from the campus gate. */
   drive?: { seconds: number; fromGps: boolean }
-  generatingCurbs?: boolean
+  planning?: boolean
+  feedbackSent?: boolean
 }
 
 function formatDrive(seconds: number) {
@@ -155,6 +156,8 @@ export function DropoffPanel(p: Props) {
         </p>
       )}
 
+      {p.destination && p.planning && !p.error && <Notice>Calculating walking routes…</Notice>}
+
       {walking ? (
         p.destination && (
           <ol className="m-0 flex list-none flex-col gap-2.5 p-0">
@@ -170,11 +173,11 @@ export function DropoffPanel(p: Props) {
           </ol>
         )
       ) : confirmed ? (
-        <Confirmed option={confirmed} kind={kind} user={p.user} drive={p.drive} onChange={() => p.onConfirm(undefined)} onFeedback={p.onFeedback} />
+        <Confirmed option={confirmed} kind={kind} user={p.user} drive={p.drive} onChange={() => p.onConfirm(undefined)} onFeedback={p.onFeedback} thanked={p.feedbackSent ?? false} />
       ) : (
         p.destination &&
         (p.options.length === 0 ? (
-          <Notice>{p.generatingCurbs ? 'Finding the nearest curbs to each door…' : `No ${verb} zones are mapped for this building yet.`}</Notice>
+          !p.error && !p.planning && <Notice>{`No matching ${verb} routes are available. Try another entrance preference or destination.`}</Notice>
         ) : (
           <ol className="m-0 flex list-none flex-col gap-2.5 p-0">
             {p.options.map((o, i) => (
@@ -334,15 +337,18 @@ function Confirmed({
   drive,
   onChange,
   onFeedback,
+  thanked,
 }: {
   option: StopOption
   kind: TripKind
   user?: User
   drive?: Props['drive']
   onChange: () => void
-  onFeedback: (f: 'faster' | 'right' | 'slower') => void
+  thanked: boolean
+  onFeedback: (f: 'faster' | 'right' | 'slower') => Promise<void>
 }) {
-  const [thanked, setThanked] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [error, setError] = useState<string>()
   const { zone } = option
   const coords = `${zone.stopPoint.lat.toFixed(6)}, ${zone.stopPoint.lng.toFixed(6)}`
 
@@ -369,6 +375,8 @@ function Confirmed({
           Open in Maps
         </a>
       </div>
+      {option.warnings.length > 0 && <Notice>{option.warnings.join(" ")}</Notice>}
+      {error && <Notice tone="error">{error}</Notice>}
       {user && (
         <div className="border-t border-line pt-3">
           {thanked ? (
@@ -387,9 +395,12 @@ function Confirmed({
                   <Button
                     key={f}
                     className="h-9 flex-1 text-sm"
-                    onClick={() => {
-                      onFeedback(f)
-                      setThanked(true)
+                    disabled={sending}
+                    onClick={async () => {
+                      setSending(true)
+                      try { await onFeedback(f); setError(undefined) }
+                      catch (e) { setError((e as Error).message) }
+                      finally { setSending(false) }
                     }}
                   >
                     {label}

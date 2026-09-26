@@ -1,75 +1,34 @@
-# React + TypeScript + Vite
+# Doorstep frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
-
-Currently, two official plugins are available:
-
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
+```bash
+bun install
+# Copy only if .env.local does not already exist:
+cp .env.example .env.local
+bun run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://npmx.dev/package/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://npmx.dev/package/eslint-plugin-react-dom) for React-specific lint rules:
+Set `VITE_GOOGLE_MAPS_API_KEY` to the browser key for Maps JavaScript API and
+Street View. The backend separately needs `GOOGLE_SERVER_KEY` for Places API
+(New) and Routes API. Never put the server key in a VITE variable.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+Start the backend on port 3000, synchronize its Prisma schema, seed campus data,
+and run its curb generator before opening the map; see `../backend/README.md`.
+Vite proxies relative `/api` requests to localhost:3000 during development.
+Production hosting must also proxy `/api` to the backend.
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+The app now always uses the backend; `VITE_USE_MOCK` is obsolete. Accounts require
+email/password, with registration available on the sign-in screen. Only the token
+and map display preferences are stored locally. Campus data, saved zones, closure
+reports, feedback, search, ranking, and directions are managed by the backend.
+Map display, GPS, Street View, editing gestures, and personal-zone display merging
+remain in the browser.
 
-```
+`src/api.ts` owns HTTP calls. `src/api/adapters.ts` converts canonical backend
+GeoJSON coordinates, uppercase kinds, and author IDs into map view models.
+Wire types are imported type-only from `backend/src/contracts.ts`, derived from
+Prisma. After backend schema changes, run `bun run db:generate` in the backend
+before building the frontend.
+
+`bun run build` checks types and builds; `bun run lint` runs ESLint. The backend's
+`bun test` suite tests the actual frontend API functions against isolated MongoDB
+with Google responses mocked.

@@ -1,12 +1,14 @@
-import type { Building, Entrance, LatLng, Zone } from '../types'
+type LatLng = { lat: number; lng: number };
+type Entrance = { id: string; buildingId: string; label: string; location: LatLng; accessible: boolean; rooms: string[] };
+type Building = { id: string; code: string; name: string; location: LatLng; entrances: Entrance[] };
 
 // FIU Modesto A. Maidique Campus (MMC).
 //
 // Only buildings and their DOORS live here. Curb zones are generated
-// automatically for every door (see curbs.ts), so nobody has to draw them.
+// by db/generate-curbs.ts using the server Google key.
 //
 // Coordinates are APPROXIMATE. Fix each door by finding it on satellite view /
-// Street View. This data moves to the backend seed once the API is up.
+// Street View. The seed preserves existing records so verified edits are retained.
 
 export const CAMPUS_CENTER: LatLng = { lat: 25.7568, lng: -80.3743 }
 
@@ -53,8 +55,3 @@ export const BUILDINGS: Building[] = [
   ]),
 ]
 
-/**
- * Zones the design team drew or adjusted by hand. A design zone for an
- * entrance replaces the generated one. Empty = use generated curbs everywhere.
- */
-export const DESIGN_ZONES: Zone[] = []

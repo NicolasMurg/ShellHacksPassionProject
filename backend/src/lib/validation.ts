@@ -7,12 +7,16 @@ export const point = z.object({
   coordinates: z.tuple([z.number().min(-180).max(180), z.number().min(-90).max(90)]),
 }).strict();
 export const profile = z.object({
+  pace: z.enum(["slow", "average", "fast"]),
+  age: z.number().int().min(5).max(110).nullable().optional(),
+  heightCm: z.number().int().min(80).max(230).nullable().optional(),
+  mobility: z.enum(["none", "cane", "crutches", "wheelchair", "stroller"]),
   avoidStairs: z.boolean(), requireCurbCuts: z.boolean(), avoidSteepSlopes: z.boolean(),
   maxWalkMinutes: z.number().int().min(1).max(240).nullable().optional(),
   preferAccessibleEntrances: z.boolean(),
 }).strict();
 export const defaultProfile = { avoidStairs: false, requireCurbCuts: false,
-  avoidSteepSlopes: false, maxWalkMinutes: null, preferAccessibleEntrances: false };
+  avoidSteepSlopes: false, maxWalkMinutes: null, preferAccessibleEntrances: false, pace: "average", mobility: "none", learnedFactor: 1 };
 export const zoneInput = z.object({
   buildingId: id, entranceId: objectId, name: z.string().trim().min(1).max(200),
   kinds: z.array(z.enum(["DROPOFF", "PICKUP", "BOTH"])).min(1).max(3),

@@ -1,4 +1,4 @@
-// Shared data shapes. The backend (Prisma schema + API responses) must match these.
+// View models for the map. api/adapters.ts converts canonical backend JSON into these types.
 
 export type LatLng = { lat: number; lng: number }
 
@@ -45,6 +45,7 @@ export type Zone = {
   buildingId: string
   entranceId: string // the door this curb leads to
   source: 'generated' | 'design' | 'personal'
+  rooms?: string[]
   name: string // "East loop curb"
   kinds: TripKind[] // what this curb can be used for
   polygon: LatLng[] // the curb area, drawn on the map
@@ -61,6 +62,7 @@ export type RoadClosure = {
   path: LatLng[]
   reason: string
   reportedBy: string // display name
+  ownerId: string | null
   createdAt: string // ISO date
 }
 
@@ -71,6 +73,11 @@ export type Pace = 'slow' | 'average' | 'fast'
 
 /** Personal metrics used to estimate walking time. */
 export type WalkingProfile = {
+  avoidStairs?: boolean
+  requireCurbCuts?: boolean
+  avoidSteepSlopes?: boolean
+  maxWalkMinutes?: number | null
+  preferAccessibleEntrances?: boolean
   pace?: Pace // unset = average
   age?: number
   heightCm?: number

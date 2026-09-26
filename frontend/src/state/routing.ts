@@ -1,4 +1,4 @@
-import { useMapsLibrary } from '@vis.gl/react-google-maps'
+import * as api from '../api'
 import { useEffect, useState } from 'react'
 import type { LatLng } from '../types'
 
@@ -21,42 +21,42 @@ export function useGeolocation(): Geo {
   return geo
 }
 
-export type RouteInfo = { path: LatLng[]; seconds: number; meters: number }
+export type RouteInfo = { path: LatLng[]; seconds: number; meters: number; warnings: string[] }
 
-/** A driving or walking route from Google. Undefined while loading or if Google has no route. */
-export function useRoute(mode: 'DRIVING' | 'WALKING', from?: LatLng, to?: LatLng): RouteInfo | undefined {
-  const routes = useMapsLibrary('routes')
-  const [result, setResult] = useState<{ key: string; info: RouteInfo }>()
-  // Round so GPS jitter of a few meters doesn't trigger a new request.
-  const key = from && to ? `${mode}|${from.lat.toFixed(4)},${from.lng.toFixed(4)}|${to.lat},${to.lng}` : undefined
-
+/** Route calculation runs on the server; the browser only renders its path. */
+export function useRoute(mode: 'DRIVING' | 'WALKING', from?: LatLng, to?: LatLng) {
+  const key = from && to ? JSON.stringify({ mode, from: { lat: +from.lat.toFixed(4), lng: +from.lng.toFixed(4) }, to }) : undefined
+  const [result, setResult] = useState<{ key: string; info?: RouteInfo; error?: string }>()
   useEffect(() => {
-    if (!key || !routes || !from || !to) return
-    let cancelled = false
-    new routes.DirectionsService()
-      .route({ origin: from, destination: to, travelMode: google.maps.TravelMode[mode] })
-      .then((res) => {
-        const route = res.routes[0]
-        const leg = route?.legs[0]
-        if (cancelled || !route || !leg) return
-        const path = route.overview_path.map((p) => p.toJSON())
-        setResult({
-          key,
-          info: {
-            // Tie the ends back to the real points (Google snaps to the nearest road/path).
-            path: mode === 'WALKING' ? [from, ...path, to] : [from, ...path],
-            seconds: leg.duration?.value ?? 0,
-            meters: leg.distance?.value ?? 0,
-          },
-        })
-      })
-      .catch((err) => console.warn(`${mode} route unavailable:`, err))
-    return () => {
-      cancelled = true
-    }
-  }, [routes, key]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (!key) return
+    const controller = new AbortController()
+    const timer = setTimeout(() => {
+      const input = JSON.parse(key) as { mode: 'DRIVING' | 'WALKING'; from: LatLng; to: LatLng }
+      api.route(input.mode, input.from, input.to, controller.signal).then(info => {
+        if (!controller.signal.aborted) setResult({ key, info })
+      }).catch((e: Error) => { if (!controller.signal.aborted) setResult({ key, error: e.message }) })
+    }, 300)
+    return () => { clearTimeout(timer); controller.abort() }
+  }, [key])
+  return result?.key === key ? { info: result?.info, error: result?.error } : {}
+}
 
-  if (!from || !to) return undefined
-  if (result && result.key === key) return result.info
-  return undefined
+export function useServerPlan(input: api.PlanInput | undefined, token: string | undefined, revision: string) {
+  const key = input ? JSON.stringify({ input, token, revision }) : undefined
+  const [result, setResult] = useState<{ key: string; data?: Awaited<ReturnType<typeof api.plan>>; error?: string }>()
+  useEffect(() => {
+    if (!key) return
+    const controller = new AbortController()
+    const timer = setTimeout(() => {
+      const request = JSON.parse(key) as { input: api.PlanInput; token?: string }
+      api.plan(request.input, request.token, controller.signal).then(data => {
+        if (!controller.signal.aborted) setResult({ key, data })
+      }).catch((e: Error) => { if (!controller.signal.aborted) setResult({ key, error: e.message }) })
+    }, 300)
+    return () => { clearTimeout(timer); controller.abort() }
+  }, [key])
+  return {
+    data: result?.key === key ? result?.data : undefined, error: result?.key === key ? result?.error : undefined,
+    loading: Boolean(key) && result?.key !== key
+  }
 }
