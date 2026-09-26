@@ -48,8 +48,12 @@ export type RoadClosure = {
 
 export type Mobility = 'none' | 'cane' | 'crutches' | 'wheelchair' | 'stroller'
 
+/** How fast someone says they usually walk. */
+export type Pace = 'slow' | 'average' | 'fast'
+
 /** Personal metrics used to estimate walking time. */
 export type WalkingProfile = {
+  pace?: Pace // unset = average
   age?: number
   heightCm?: number
   mobility: Mobility

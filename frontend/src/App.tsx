@@ -1,11 +1,15 @@
 import { APIProvider } from '@vis.gl/react-google-maps'
 import { useMemo, useState } from 'react'
-import { AccountMenu, LoginModal, ProfileModal } from './components/Account'
+import { AccountMenu } from './components/Account'
 import { ClosurePanel } from './components/ClosurePanel'
 import { DropoffPanel } from './components/DropoffPanel'
 import { EditPanel } from './components/EditPanel'
+import { LayerControl } from './components/LayerControl'
 import { MapCanvas, type Tool } from './components/MapCanvas'
+import { PreferencesPage } from './components/PreferencesPage'
+import { TabBar, type Tab } from './components/TabBar'
 import { Sheet } from './components/ui'
+import { useMapLayers } from './mapLayers'
 import { rankStops } from './planner'
 import { parseDestination, type Destination } from './search'
 import { AuthProvider, useAuth } from './state/auth'
@@ -37,7 +41,7 @@ export default function App() {
 type Panel = 'dropoff' | 'edit' | 'closure'
 
 function Doorstep() {
-  const { user, token, saveProfile } = useAuth()
+  const { user, token, restoring, saveProfile } = useAuth()
   const campus = useCampus()
   const zoneStore = useZones(campus.defaults, campus.buildings, user, token)
   const closureStore = useClosures(token, user?.name)
@@ -46,7 +50,9 @@ function Doorstep() {
   const [tool, setTool] = useState<Tool>('none')
   const [draftClosure, setDraftClosure] = useState<LatLng[]>([])
   const [expanded, setExpanded] = useState(true)
-  const [modal, setModal] = useState<'login' | 'profile'>()
+  const [layers, setLayers] = useMapLayers()
+  // Signed-out visitors land on the sign-in page; returning users go straight to the map.
+  const [tab, setTab] = useState<Tab>(() => (user || restoring ? 'map' : 'preferences'))
 
   // Drop-off planning
   const [destination, setDestination] = useState<Destination>()
@@ -87,7 +93,7 @@ function Doorstep() {
 
   const requireUser = (then: () => void) => {
     if (user) then()
-    else setModal('login')
+    else setTab('preferences')
   }
 
   const openPanel = (next: Panel) =>
@@ -140,123 +146,131 @@ function Doorstep() {
   const hiddenDefaults = campus.defaults.filter((z) => zoneStore.hiddenDefaultIds.has(z.id))
 
   return (
-    <div className="fixed inset-0">
-      <MapCanvas
-        buildings={campus.buildings}
-        zones={zones}
-        closures={closureStore.closures}
-        destination={panel === 'dropoff' ? destination?.building : undefined}
-        selectedZoneId={activeZoneId}
-        editingZoneId={editingZone && editingZone.ownerId !== null ? editingZone.id : undefined}
-        editMode={panel === 'edit'}
-        tool={tool}
-        draftClosure={draftClosure}
-        onMapClick={handleMapClick}
-        onSelectZone={handleSelectZone}
-        onSelectBuilding={(b) => {
-          setDestination({ building: b, room: '' })
-          setSearchError(undefined)
-          setSelectedZoneId(undefined)
-          setConfirmedZoneId(undefined)
-        }}
-        onZoneChange={(z) => void zoneStore.upsert(z)}
-      />
+    <div className="fixed inset-0 flex flex-col">
+      <div className="relative min-h-0 flex-1">
+        {/* The map stays mounted behind the Preferences page so it doesn't reload. */}
+        <main className="absolute inset-0" inert={tab !== 'map'}>
+          <MapCanvas
+            buildings={campus.buildings}
+            zones={zones}
+            closures={closureStore.closures}
+            destination={panel === 'dropoff' ? destination?.building : undefined}
+            selectedZoneId={activeZoneId}
+            editingZoneId={editingZone && editingZone.ownerId !== null ? editingZone.id : undefined}
+            editMode={panel === 'edit'}
+            tool={tool}
+            draftClosure={draftClosure}
+            layers={layers}
+            onMapClick={handleMapClick}
+            onSelectZone={handleSelectZone}
+            onSelectBuilding={(b) => {
+              setDestination({ building: b, room: '' })
+              setSearchError(undefined)
+              setSelectedZoneId(undefined)
+              setConfirmedZoneId(undefined)
+            }}
+            onZoneChange={(z) => void zoneStore.upsert(z)}
+          />
 
-      <div className="absolute right-4 top-[max(16px,env(safe-area-inset-top))] z-30 flex items-center gap-2">
-        <Legend />
-        <AccountMenu
-          onSignIn={() => setModal('login')}
-          onProfile={() => setModal('profile')}
-          onEditZones={() => openPanel('edit')}
-          onReportClosure={() => openPanel('closure')}
-        />
+          <div className="absolute right-4 top-[max(16px,env(safe-area-inset-top))] z-30 flex items-center gap-2">
+            <Legend />
+            <LayerControl value={layers} onChange={setLayers} />
+            <AccountMenu
+              onSignIn={() => setTab('preferences')}
+              onPreferences={() => setTab('preferences')}
+              onEditZones={() => openPanel('edit')}
+              onReportClosure={() => openPanel('closure')}
+            />
+          </div>
+
+          <Sheet expanded={expanded} onToggle={() => setExpanded((v) => !v)}>
+            <div className="flex items-center gap-2.5">
+              <span aria-hidden className="size-5 rounded-[6px_6px_6px_2px] bg-gradient-to-br from-accent to-[#2a8cff]" />
+              <span className="text-lg font-extrabold tracking-tight">Doorstep</span>
+              <span className="ml-auto text-xs text-muted">the right door, every time</span>
+            </div>
+
+            {panel === 'dropoff' && (
+              <DropoffPanel
+                user={user}
+                destination={destination}
+                kind={kind}
+                onKind={(k) => {
+                  setKind(k)
+                  setConfirmedZoneId(undefined)
+                }}
+                stepFree={stepFree}
+                onStepFree={setStepFreeChoice}
+                options={options}
+                selectedZoneId={activeZoneId}
+                onSelect={setSelectedZoneId}
+                confirmedZoneId={confirmedZoneId}
+                onConfirm={setConfirmedZoneId}
+                onSearch={search}
+                onClear={() => {
+                  setDestination(undefined)
+                  setSearchError(undefined)
+                  setConfirmedZoneId(undefined)
+                }}
+                onSignIn={() => setTab('preferences')}
+                onFeedback={(f) => user && void saveProfile(learn(user.profile, f))}
+                error={searchError ?? campus.error}
+              />
+            )}
+
+            {panel === 'edit' && user && (
+              <EditPanel
+                buildings={campus.buildings}
+                selected={editingZone}
+                personal={zoneStore.personal}
+                hiddenDefaults={hiddenDefaults}
+                tool={tool}
+                onTool={setTool}
+                onSelect={setEditingZoneId}
+                onUpdate={(z) => void zoneStore.upsert(z)}
+                onDelete={(z) => {
+                  void zoneStore.remove(z)
+                  setEditingZoneId(undefined)
+                }}
+                onCustomize={(z) => setEditingZoneId(zoneStore.customize(z)?.id)}
+                onHide={(z) => {
+                  zoneStore.hideDefault(z)
+                  setEditingZoneId(undefined)
+                }}
+                onRestore={zoneStore.restoreDefault}
+                onDone={() => {
+                  setPanel('dropoff')
+                  setTool('none')
+                  setEditingZoneId(undefined)
+                }}
+              />
+            )}
+
+            {panel === 'closure' && user && (
+              <ClosurePanel
+                user={user}
+                draft={draftClosure}
+                closures={closureStore.closures}
+                onUndo={() => setDraftClosure((d) => d.slice(0, -1))}
+                onSubmit={async (reason) => {
+                  await closureStore.report(draftClosure, reason)
+                  setDraftClosure([])
+                }}
+                onRemove={(id) => void closureStore.remove(id)}
+                onDone={() => {
+                  setPanel('dropoff')
+                  setTool('none')
+                  setDraftClosure([])
+                }}
+              />
+            )}
+          </Sheet>
+        </main>
+
+        {tab === 'preferences' && <PreferencesPage onOpenMap={() => setTab('map')} />}
       </div>
 
-      <Sheet expanded={expanded} onToggle={() => setExpanded((v) => !v)}>
-        <div className="flex items-center gap-2.5">
-          <span aria-hidden className="size-5 rounded-[6px_6px_6px_2px] bg-gradient-to-br from-accent to-[#2a8cff]" />
-          <span className="text-lg font-extrabold tracking-tight">Doorstep</span>
-          <span className="ml-auto text-xs text-muted">the right door, every time</span>
-        </div>
-
-        {panel === 'dropoff' && (
-          <DropoffPanel
-            user={user}
-            destination={destination}
-            kind={kind}
-            onKind={(k) => {
-              setKind(k)
-              setConfirmedZoneId(undefined)
-            }}
-            stepFree={stepFree}
-            onStepFree={setStepFreeChoice}
-            options={options}
-            selectedZoneId={activeZoneId}
-            onSelect={setSelectedZoneId}
-            confirmedZoneId={confirmedZoneId}
-            onConfirm={setConfirmedZoneId}
-            onSearch={search}
-            onClear={() => {
-              setDestination(undefined)
-              setSearchError(undefined)
-              setConfirmedZoneId(undefined)
-            }}
-            onSignIn={() => setModal('login')}
-            onFeedback={(f) => user && void saveProfile(learn(user.profile, f))}
-            error={searchError ?? campus.error}
-          />
-        )}
-
-        {panel === 'edit' && user && (
-          <EditPanel
-            buildings={campus.buildings}
-            selected={editingZone}
-            personal={zoneStore.personal}
-            hiddenDefaults={hiddenDefaults}
-            tool={tool}
-            onTool={setTool}
-            onSelect={setEditingZoneId}
-            onUpdate={(z) => void zoneStore.upsert(z)}
-            onDelete={(z) => {
-              void zoneStore.remove(z)
-              setEditingZoneId(undefined)
-            }}
-            onCustomize={(z) => setEditingZoneId(zoneStore.customize(z)?.id)}
-            onHide={(z) => {
-              zoneStore.hideDefault(z)
-              setEditingZoneId(undefined)
-            }}
-            onRestore={zoneStore.restoreDefault}
-            onDone={() => {
-              setPanel('dropoff')
-              setTool('none')
-              setEditingZoneId(undefined)
-            }}
-          />
-        )}
-
-        {panel === 'closure' && user && (
-          <ClosurePanel
-            user={user}
-            draft={draftClosure}
-            closures={closureStore.closures}
-            onUndo={() => setDraftClosure((d) => d.slice(0, -1))}
-            onSubmit={async (reason) => {
-              await closureStore.report(draftClosure, reason)
-              setDraftClosure([])
-            }}
-            onRemove={(id) => void closureStore.remove(id)}
-            onDone={() => {
-              setPanel('dropoff')
-              setTool('none')
-              setDraftClosure([])
-            }}
-          />
-        )}
-      </Sheet>
-
-      {modal === 'login' && <LoginModal onClose={() => setModal(undefined)} onNewUser={() => setModal('profile')} />}
-      {modal === 'profile' && <ProfileModal onClose={() => setModal(undefined)} />}
+      <TabBar tab={tab} onTab={setTab} />
     </div>
   )
 }

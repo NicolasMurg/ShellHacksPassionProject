@@ -1,4 +1,4 @@
-﻿import { useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { formatWalk } from '../geo'
 import type { Destination } from '../search'
 import type { StopOption, TripKind, User } from '../types'
@@ -28,7 +28,7 @@ type Props = {
   error?: string
 }
 
-/** The "My car â†’ Targeted drop-off" screen. */
+/** The "My car → Targeted drop-off" screen. */
 export function DropoffPanel(p: Props) {
   const [text, setText] = useState('')
   const verb = p.kind === 'dropoff' ? 'drop-off' : 'pickup'
@@ -42,7 +42,7 @@ export function DropoffPanel(p: Props) {
   return (
     <>
       <header>
-        <p className="m-0 text-xs font-semibold text-muted">My car â€º</p>
+        <p className="m-0 text-xs font-semibold text-muted">My car ›</p>
         <h1 className="m-0 text-xl font-extrabold tracking-tight">Targeted {verb}</h1>
       </header>
 
@@ -57,7 +57,7 @@ export function DropoffPanel(p: Props) {
       />
 
       <form role="search" onSubmit={submit} className="flex h-13 items-center gap-1.5 rounded-full border border-line bg-raised pl-4 pr-1.5 focus-within:border-accent">
-        <span aria-hidden className="text-lg text-muted">âŒ•</span>
+        <span aria-hidden className="text-lg text-muted">⌕</span>
         <input
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -76,7 +76,7 @@ export function DropoffPanel(p: Props) {
             }}
             className="size-8 rounded-full text-xl text-muted hover:text-fg"
           >
-            Ã—
+            ×
           </button>
         )}
         <button
@@ -85,12 +85,12 @@ export function DropoffPanel(p: Props) {
           aria-label="Find the right entrance"
           className="grid size-11 place-items-center rounded-full bg-accent text-lg font-black text-accent-ink disabled:bg-high disabled:text-muted"
         >
-          â†’
+          →
         </button>
       </form>
 
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <Switch checked={p.stepFree} onChange={p.onStepFree} label="â™¿ Step-free only" />
+        <Switch checked={p.stepFree} onChange={p.onStepFree} label="♿ Step-free only" />
         {p.user ? (
           <span className="text-xs text-muted">
             Your pace: {walkingSpeed(p.user.profile).toFixed(2)} m/s
@@ -198,7 +198,7 @@ function OptionCard({
           <span>{formatWalk(option.walkSeconds)}</span>
         </div>
         <h3 className="mb-0 mt-1.5 text-base font-bold tracking-tight">{zone.name}</h3>
-        <p className="m-0 mt-0.5 text-sm text-muted">â†’ {zone.entrance.label}</p>
+        <p className="m-0 mt-0.5 text-sm text-muted">→ {zone.entrance.label}</p>
         <p className="m-0 mt-2 text-sm">{option.reason}</p>
         {option.warnings.length > 0 && (
           <ul className="m-0 mt-2.5 flex list-none flex-wrap gap-1.5 p-0">

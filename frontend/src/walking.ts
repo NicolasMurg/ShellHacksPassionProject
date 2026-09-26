@@ -1,9 +1,22 @@
-import type { Mobility, WalkingProfile } from './types'
+import type { Mobility, Pace, WalkingProfile } from './types'
 
 // Personal walking-speed model. The backend can replace this with one trained
 // on real trip data; the frontend uses it for instant estimates.
 
 const BASE_SPEED_MPS = 1.34 // typical adult walking speed
+
+// Starting guesses; tune with timed walks on campus.
+const PACE_FACTOR: Record<Pace, number> = {
+  slow: 0.8,
+  average: 1,
+  fast: 1.2,
+}
+
+export const PACE_LABEL: Record<Pace, string> = {
+  slow: 'Slow',
+  average: 'Average',
+  fast: 'Fast',
+}
 
 const MOBILITY_FACTOR: Record<Mobility, number> = {
   none: 1,
@@ -39,7 +52,11 @@ function heightFactor(heightCm?: number): number {
 export function walkingSpeed(profile?: WalkingProfile): number {
   if (!profile) return BASE_SPEED_MPS
   const speed =
-    BASE_SPEED_MPS * ageFactor(profile.age) * heightFactor(profile.heightCm) * MOBILITY_FACTOR[profile.mobility]
+    BASE_SPEED_MPS *
+    PACE_FACTOR[profile.pace ?? 'average'] *
+    ageFactor(profile.age) *
+    heightFactor(profile.heightCm) *
+    MOBILITY_FACTOR[profile.mobility]
   return speed / (profile.learnedFactor || 1)
 }
 

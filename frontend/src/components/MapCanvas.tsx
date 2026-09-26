@@ -1,7 +1,8 @@
-import { AdvancedMarker, ColorScheme, Map, Polygon, Polyline, useMap } from '@vis.gl/react-google-maps'
-import { useEffect } from 'react'
+import { AdvancedMarker, Map, Polygon, Polyline, useMap } from '@vis.gl/react-google-maps'
+import { useEffect, useRef, useState } from 'react'
 import { CAMPUS_CENTER } from '../data/campus'
 import { centroid, distanceMeters } from '../geo'
+import { MAP_STYLES, type MapLayers } from '../mapLayers'
 import type { Building, LatLng, RoadClosure, Zone } from '../types'
 
 // Keep in sync with the @theme colors in index.css (the map needs raw hex).
@@ -25,6 +26,7 @@ type Props = {
   editMode: boolean
   tool: Tool
   draftClosure: LatLng[]
+  layers: MapLayers
   onMapClick: (point: LatLng) => void
   onSelectZone: (zone: Zone) => void
   onSelectBuilding: (b: Building) => void
@@ -34,8 +36,10 @@ type Props = {
 const MAP_ID = import.meta.env.VITE_GOOGLE_MAP_ID || 'DEMO_MAP_ID'
 
 export function MapCanvas(props: Props) {
-  const { buildings, zones, closures, destination, selectedZoneId, editingZoneId, editMode, tool, draftClosure } = props
+  const { buildings, zones, closures, destination, selectedZoneId, editingZoneId, editMode, tool, draftClosure, layers } = props
   const selected = zones.find((z) => z.id === selectedZoneId)
+  const { mapTypeId, colorScheme } = MAP_STYLES[layers.style]
+  const start = useStartCamera(colorScheme)
 
   useFitTo(destination, zones)
 
@@ -47,9 +51,10 @@ export function MapCanvas(props: Props) {
     <Map
       className="absolute inset-0"
       mapId={MAP_ID}
-      colorScheme={ColorScheme.DARK}
-      defaultCenter={CAMPUS_CENTER}
-      defaultZoom={17}
+      colorScheme={colorScheme}
+      mapTypeId={mapTypeId}
+      defaultCenter={start.center}
+      defaultZoom={start.zoom}
       // Flat 2D map: no tilting or rotating.
       tilt={0}
       heading={0}
@@ -61,6 +66,9 @@ export function MapCanvas(props: Props) {
       draggableCursor={tool === 'none' ? undefined : 'crosshair'}
       onClick={(e) => e.detail.latLng && props.onMapClick(e.detail.latLng)}
     >
+      {layers.traffic && <Overlay kind="traffic" />}
+      {layers.transit && <Overlay kind="transit" />}
+
       {!destination &&
         !editMode &&
         buildings.map((b) => (
@@ -231,13 +239,48 @@ function ClosureLine({ path, label }: { path: LatLng[]; label: string }) {
   )
 }
 
+/** Google's live traffic or transit lines drawn over the map. */
+function Overlay({ kind }: { kind: 'traffic' | 'transit' }) {
+  const map = useMap()
+
+  useEffect(() => {
+    if (!map) return
+    const layer = kind === 'traffic' ? new google.maps.TrafficLayer() : new google.maps.TransitLayer()
+    layer.setMap(map)
+    return () => layer.setMap(null)
+  }, [map, kind])
+
+  return null
+}
+
+/**
+ * Where a new map instance should open. Changing the color scheme makes the
+ * library build a new map, so it starts where the old one was, not at campus center.
+ */
+function useStartCamera(colorScheme: string) {
+  const map = useMap()
+  const [start, setStart] = useState({ colorScheme, center: CAMPUS_CENTER, zoom: 17 })
+  if (start.colorScheme !== colorScheme) {
+    setStart({
+      colorScheme,
+      center: map?.getCenter()?.toJSON() ?? start.center,
+      zoom: map?.getZoom() ?? start.zoom,
+    })
+  }
+  return start
+}
+
 /** Zoom to the destination building and its zones. */
 function useFitTo(destination: Building | undefined, zones: Zone[]) {
   const map = useMap()
   const destinationId = destination?.id
+  const fittedFor = useRef<string>(undefined)
 
   useEffect(() => {
     if (!map) return
+    // A rebuilt map (after a light/dark switch) already opens at the old view.
+    if (fittedFor.current === (destinationId ?? '')) return
+    fittedFor.current = destinationId ?? ''
     if (!destination) {
       map.panTo(CAMPUS_CENTER)
       map.setZoom(17)
