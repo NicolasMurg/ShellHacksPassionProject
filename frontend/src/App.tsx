@@ -1,122 +1,279 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { APIProvider } from '@vis.gl/react-google-maps'
+import { useMemo, useState } from 'react'
+import { AccountMenu, LoginModal, ProfileModal } from './components/Account'
+import { ClosurePanel } from './components/ClosurePanel'
+import { DropoffPanel } from './components/DropoffPanel'
+import { EditPanel } from './components/EditPanel'
+import { MapCanvas, type Tool } from './components/MapCanvas'
+import { Sheet } from './components/ui'
+import { rankStops } from './planner'
+import { parseDestination, type Destination } from './search'
+import { AuthProvider, useAuth } from './state/auth'
+import { useCampus, useClosures, useZones } from './state/data'
+import type { LatLng, TripKind, Zone } from './types'
+import { learn, needsStepFree } from './walking'
 
-function App() {
-  const [count, setCount] = useState(0)
+const API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined
 
+export default function App() {
+  if (!API_KEY) {
+    return (
+      <div className="grid h-full place-items-center p-6 text-center text-muted">
+        <p>
+          Missing <code>VITE_GOOGLE_MAPS_API_KEY</code> in <code>frontend/.env.local</code>.
+        </p>
+      </div>
+    )
+  }
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
-
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+    <APIProvider apiKey={API_KEY}>
+      <AuthProvider>
+        <Doorstep />
+      </AuthProvider>
+    </APIProvider>
   )
 }
 
-export default App
+type Panel = 'dropoff' | 'edit' | 'closure'
+
+function Doorstep() {
+  const { user, token, saveProfile } = useAuth()
+  const campus = useCampus()
+  const zoneStore = useZones(campus.defaults, campus.buildings, user, token)
+  const closureStore = useClosures(token, user?.name)
+
+  const [panel, setPanel] = useState<Panel>('dropoff')
+  const [tool, setTool] = useState<Tool>('none')
+  const [draftClosure, setDraftClosure] = useState<LatLng[]>([])
+  const [expanded, setExpanded] = useState(true)
+  const [modal, setModal] = useState<'login' | 'profile'>()
+
+  // Drop-off planning
+  const [destination, setDestination] = useState<Destination>()
+  const [searchError, setSearchError] = useState<string>()
+  const [kind, setKind] = useState<TripKind>('dropoff')
+  const [stepFreeChoice, setStepFreeChoice] = useState<boolean>()
+  const [selectedZoneId, setSelectedZoneId] = useState<string>()
+  const [confirmedZoneId, setConfirmedZoneId] = useState<string>()
+
+  // Zone editing
+  const [editingZoneId, setEditingZoneId] = useState<string>()
+
+  const stepFree = stepFreeChoice ?? needsStepFree(user?.profile)
+  const { zones } = zoneStore
+
+  const options = useMemo(
+    () =>
+      destination
+        ? rankStops({
+            zones,
+            buildingId: destination.building.id,
+            room: destination.room,
+            kind,
+            stepFree,
+            profile: user?.profile,
+            closures: closureStore.closures,
+          })
+        : [],
+    [destination, zones, kind, stepFree, user?.profile, closureStore.closures],
+  )
+
+  const activeZoneId =
+    panel === 'edit'
+      ? editingZoneId
+      : options.some((o) => o.zone.id === selectedZoneId)
+        ? selectedZoneId
+        : options[0]?.zone.id
+
+  const requireUser = (then: () => void) => {
+    if (user) then()
+    else setModal('login')
+  }
+
+  const openPanel = (next: Panel) =>
+    requireUser(() => {
+      setPanel(next)
+      setTool(next === 'closure' ? 'drawClosure' : 'none')
+      setDraftClosure([])
+      setEditingZoneId(undefined)
+      setExpanded(true)
+    })
+
+  const search = (text: string) => {
+    try {
+      setDestination(parseDestination(text, campus.buildings))
+      setSearchError(undefined)
+      setSelectedZoneId(undefined)
+      setConfirmedZoneId(undefined)
+    } catch (e) {
+      setDestination(undefined)
+      setSearchError((e as Error).message)
+    }
+  }
+
+  const handleMapClick = (point: LatLng) => {
+    if (tool === 'addZone') {
+      const zone = zoneStore.createAt(point)
+      if (zone) setEditingZoneId(zone.id)
+      setTool('none')
+    } else if (tool === 'drawClosure') {
+      setDraftClosure((d) => [...d, point])
+    }
+  }
+
+  const handleSelectZone = (zone: Zone) => {
+    if (panel === 'edit') {
+      setEditingZoneId(zone.id)
+      return
+    }
+    if (panel !== 'dropoff') return
+    if (zone.buildingId !== destination?.building.id) {
+      const building = campus.buildings.find((b) => b.id === zone.buildingId)
+      if (building) setDestination({ building, room: '' })
+    }
+    setSelectedZoneId(zone.id)
+    setConfirmedZoneId(undefined)
+    setExpanded(true)
+  }
+
+  const editingZone = zones.find((z) => z.id === editingZoneId)
+  const hiddenDefaults = campus.defaults.filter((z) => zoneStore.hiddenDefaultIds.has(z.id))
+
+  return (
+    <div className="fixed inset-0">
+      <MapCanvas
+        buildings={campus.buildings}
+        zones={zones}
+        closures={closureStore.closures}
+        destination={panel === 'dropoff' ? destination?.building : undefined}
+        selectedZoneId={activeZoneId}
+        editingZoneId={editingZone && editingZone.ownerId !== null ? editingZone.id : undefined}
+        editMode={panel === 'edit'}
+        tool={tool}
+        draftClosure={draftClosure}
+        onMapClick={handleMapClick}
+        onSelectZone={handleSelectZone}
+        onSelectBuilding={(b) => {
+          setDestination({ building: b, room: '' })
+          setSearchError(undefined)
+          setSelectedZoneId(undefined)
+          setConfirmedZoneId(undefined)
+        }}
+        onZoneChange={(z) => void zoneStore.upsert(z)}
+      />
+
+      <div className="absolute right-4 top-[max(16px,env(safe-area-inset-top))] z-30 flex items-center gap-2">
+        <Legend />
+        <AccountMenu
+          onSignIn={() => setModal('login')}
+          onProfile={() => setModal('profile')}
+          onEditZones={() => openPanel('edit')}
+          onReportClosure={() => openPanel('closure')}
+        />
+      </div>
+
+      <Sheet expanded={expanded} onToggle={() => setExpanded((v) => !v)}>
+        <div className="flex items-center gap-2.5">
+          <span aria-hidden className="size-5 rounded-[6px_6px_6px_2px] bg-gradient-to-br from-accent to-[#2a8cff]" />
+          <span className="text-lg font-extrabold tracking-tight">Doorstep</span>
+          <span className="ml-auto text-xs text-muted">the right door, every time</span>
+        </div>
+
+        {panel === 'dropoff' && (
+          <DropoffPanel
+            user={user}
+            destination={destination}
+            kind={kind}
+            onKind={(k) => {
+              setKind(k)
+              setConfirmedZoneId(undefined)
+            }}
+            stepFree={stepFree}
+            onStepFree={setStepFreeChoice}
+            options={options}
+            selectedZoneId={activeZoneId}
+            onSelect={setSelectedZoneId}
+            confirmedZoneId={confirmedZoneId}
+            onConfirm={setConfirmedZoneId}
+            onSearch={search}
+            onClear={() => {
+              setDestination(undefined)
+              setSearchError(undefined)
+              setConfirmedZoneId(undefined)
+            }}
+            onSignIn={() => setModal('login')}
+            onFeedback={(f) => user && void saveProfile(learn(user.profile, f))}
+            error={searchError ?? campus.error}
+          />
+        )}
+
+        {panel === 'edit' && user && (
+          <EditPanel
+            buildings={campus.buildings}
+            selected={editingZone}
+            personal={zoneStore.personal}
+            hiddenDefaults={hiddenDefaults}
+            tool={tool}
+            onTool={setTool}
+            onSelect={setEditingZoneId}
+            onUpdate={(z) => void zoneStore.upsert(z)}
+            onDelete={(z) => {
+              void zoneStore.remove(z)
+              setEditingZoneId(undefined)
+            }}
+            onCustomize={(z) => setEditingZoneId(zoneStore.customize(z)?.id)}
+            onHide={(z) => {
+              zoneStore.hideDefault(z)
+              setEditingZoneId(undefined)
+            }}
+            onRestore={zoneStore.restoreDefault}
+            onDone={() => {
+              setPanel('dropoff')
+              setTool('none')
+              setEditingZoneId(undefined)
+            }}
+          />
+        )}
+
+        {panel === 'closure' && user && (
+          <ClosurePanel
+            user={user}
+            draft={draftClosure}
+            closures={closureStore.closures}
+            onUndo={() => setDraftClosure((d) => d.slice(0, -1))}
+            onSubmit={async (reason) => {
+              await closureStore.report(draftClosure, reason)
+              setDraftClosure([])
+            }}
+            onRemove={(id) => void closureStore.remove(id)}
+            onDone={() => {
+              setPanel('dropoff')
+              setTool('none')
+              setDraftClosure([])
+            }}
+          />
+        )}
+      </Sheet>
+
+      {modal === 'login' && <LoginModal onClose={() => setModal(undefined)} onNewUser={() => setModal('profile')} />}
+      {modal === 'profile' && <ProfileModal onClose={() => setModal(undefined)} />}
+    </div>
+  )
+}
+
+function Legend() {
+  const item = (color: string, label: string) => (
+    <span className="flex items-center gap-1.5">
+      <span aria-hidden className={`size-2.5 rounded-sm ${color}`} />
+      {label}
+    </span>
+  )
+  return (
+    <div className="hidden items-center gap-3 rounded-full border border-line bg-surface/90 px-3.5 py-2 text-xs font-semibold shadow-[var(--shadow-float)] backdrop-blur sm:flex">
+      {item('bg-shared', 'Default zone')}
+      {item('bg-personal', 'Your zone')}
+      {item('bg-selected', 'Selected')}
+      {item('bg-closed', 'Closed road')}
+    </div>
+  )
+}
