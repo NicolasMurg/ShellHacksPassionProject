@@ -126,7 +126,7 @@ export function Sheet({ expanded, onToggle, children }: { expanded: boolean; onT
     <section
       aria-label="Doorstep panel"
       className={cx(
-        'absolute inset-x-0 bottom-0 z-20 flex flex-col rounded-t-[var(--radius-sheet)] border-t border-line bg-surface pb-[env(safe-area-inset-bottom)] shadow-[var(--shadow-float)] transition-[max-height] duration-300',
+        'absolute inset-x-0 bottom-0 z-20 flex flex-col rounded-t-[var(--radius-sheet)] border-t border-line bg-surface shadow-[var(--shadow-float)] transition-[max-height] duration-300',
         expanded ? 'max-h-[72vh]' : 'max-h-[30vh]',
         'min-[900px]:inset-y-4 min-[900px]:left-4 min-[900px]:right-auto min-[900px]:max-h-none min-[900px]:w-[420px] min-[900px]:rounded-[var(--radius-sheet)] min-[900px]:border',
       )}

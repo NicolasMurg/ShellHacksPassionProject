@@ -5,6 +5,7 @@ import type { User, WalkingProfile } from '../types'
 type Auth = {
   user?: User
   token?: string
+  restoring: boolean // a saved session is still being checked
   login: (name: string, email: string) => Promise<User>
   logout: () => void
   saveProfile: (profile: WalkingProfile) => Promise<void>
@@ -65,7 +66,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   )
 
   return (
-    <AuthContext.Provider value={{ user, token: user ? token : undefined, login, logout, saveProfile }}>
+    <AuthContext.Provider
+      value={{ user, token: user ? token : undefined, restoring: Boolean(token) && !user, login, logout, saveProfile }}
+    >
       {children}
     </AuthContext.Provider>
   )

@@ -1,11 +1,15 @@
 import { APIProvider, useMap } from '@vis.gl/react-google-maps'
 import { useMemo, useState } from 'react'
-import { AccountMenu, LoginModal, ProfileModal } from './components/Account'
+import { AccountMenu } from './components/Account'
 import { ClosurePanel } from './components/ClosurePanel'
 import { DropoffPanel } from './components/DropoffPanel'
 import { EditPanel } from './components/EditPanel'
+import { LayerControl } from './components/LayerControl'
 import { MapCanvas, type Tool } from './components/MapCanvas'
+import { PreferencesPage } from './components/PreferencesPage'
+import { TabBar, type Tab } from './components/TabBar'
 import { Sheet } from './components/ui'
+import { useMapLayers } from './mapLayers'
 import { floorOf, rankDoors, rankStops } from './planner'
 import { parseDestination, type Destination } from './search'
 import { AuthProvider, useAuth } from './state/auth'
@@ -40,7 +44,7 @@ export default function App() {
 type Panel = 'dropoff' | 'edit' | 'closure'
 
 function Doorstep() {
-  const { user, token, saveProfile } = useAuth()
+  const { user, token, restoring, saveProfile } = useAuth()
   const campus = useCampus()
   const zoneStore = useZones(campus.defaults, campus.buildings, user, token)
   const closureStore = useClosures(token, user?.name)
@@ -49,7 +53,9 @@ function Doorstep() {
   const [tool, setTool] = useState<Tool>('none')
   const [draftClosure, setDraftClosure] = useState<LatLng[]>([])
   const [expanded, setExpanded] = useState(true)
-  const [modal, setModal] = useState<'login' | 'profile'>()
+  const [layers, setLayers] = useMapLayers()
+  // Signed-out visitors land on the sign-in page; returning users go straight to the map.
+  const [tab, setTab] = useState<Tab>(() => (user || restoring ? 'map' : 'preferences'))
 
   // Drop-off planning
   const [destination, setDestination] = useState<Destination>()
@@ -124,7 +130,7 @@ function Doorstep() {
 
   const requireUser = (then: () => void) => {
     if (user) then()
-    else setModal('login')
+    else setTab('preferences')
   }
 
   const openPanel = (next: Panel) =>
@@ -178,8 +184,12 @@ function Doorstep() {
   const hiddenDefaults = campus.defaults.filter((z) => zoneStore.hiddenDefaultIds.has(z.id))
 
   return (
-    <div className="fixed inset-0">
+    <div className="fixed inset-0 flex flex-col">
+      <div className="relative min-h-0 flex-1">
+        {/* The map stays mounted behind the Preferences page so it doesn't reload. */}
+        <main className="absolute inset-0" inert={tab !== 'map'}>
       <MapCanvas
+        layers={layers}
         buildings={campus.buildings}
         entrances={campus.entrances}
         zones={zones}
@@ -211,9 +221,10 @@ function Doorstep() {
       <div className="absolute right-4 top-[max(16px,env(safe-area-inset-top))] z-30 flex flex-col items-end gap-2">
         <div className="flex items-center gap-2">
           <Legend />
+          <LayerControl value={layers} onChange={setLayers} />
           <AccountMenu
-            onSignIn={() => setModal('login')}
-            onProfile={() => setModal('profile')}
+            onSignIn={() => setTab('preferences')}
+            onPreferences={() => setTab('preferences')}
             onEditZones={() => openPanel('edit')}
             onReportClosure={() => openPanel('closure')}
           />
@@ -256,7 +267,7 @@ function Doorstep() {
               setSearchError(undefined)
               setConfirmedZoneId(undefined)
             }}
-            onSignIn={() => setModal('login')}
+            onSignIn={() => setTab('preferences')}
             onFeedback={(f) => user && void saveProfile(learn(user.profile, f))}
             error={searchError ?? campus.error}
           />
@@ -309,9 +320,12 @@ function Doorstep() {
           />
         )}
       </Sheet>
+        </main>
 
-      {modal === 'login' && <LoginModal onClose={() => setModal(undefined)} onNewUser={() => setModal('profile')} />}
-      {modal === 'profile' && <ProfileModal onClose={() => setModal(undefined)} />}
+        {tab === 'preferences' && <PreferencesPage onOpenMap={() => setTab('map')} />}
+      </div>
+
+      <TabBar tab={tab} onTab={setTab} />
     </div>
   )
 }
