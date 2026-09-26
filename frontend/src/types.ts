@@ -1,40 +1,58 @@
-// Shared data shapes. Keep these in sync with the backend (Prisma schema).
+// Shared data shapes. The backend (Prisma schema + API responses) must match these.
 
 export type LatLng = { lat: number; lng: number }
 
 /** Whether the car is dropping you off or picking you up. */
 export type TripKind = 'dropoff' | 'pickup'
 
+/** A door into a building. Part of the campus data (design team). */
+export type Entrance = {
+  id: string // "gc-east"
+  buildingId: string
+  label: string // "East entrance (ballrooms)"
+  location: LatLng
+  accessible: boolean // step-free (ramp / level / elevator)
+  rooms: string[] // rooms this door is closest to, e.g. ["1xx", "2xx"]; empty = any room
+  hours?: string // "7am–11pm"
+}
+
 export type Building = {
-  id: string
+  id: string // "gc"
   code: string // "GC"
   name: string // "Graham Center"
   location: LatLng // the single "address pin" ride apps use today
+  entrances: Entrance[]
 }
 
-export type Entrance = {
-  label: string // "South ramp entrance"
-  location: LatLng
-  accessible: boolean // step-free (ramp / level / elevator)
+/** What a curb looks like, checked by AI from Street View or by reports. */
+export type CurbAudit = {
+  curbCut: boolean
+  fireLane: boolean
+  busStop: boolean
+  obstacles: string[]
+  safeToStop: number // 0-10
+  notes: string
 }
 
 /**
- * A curb area where the car stops for a specific entrance.
- * Default zones are drawn by our design team (ownerId = null).
- * Personal zones belong to one user and only they see them.
+ * A curb area where the car stops for one entrance.
+ *  - generated: made automatically for every entrance (nearest drivable road point)
+ *  - design:    drawn or adjusted by our design team
+ *  - personal:  made by one user; only they see it
  */
 export type Zone = {
   id: string
   buildingId: string
-  name: string // "Newell Dr curb"
+  entranceId: string // the door this curb leads to
+  source: 'generated' | 'design' | 'personal'
+  name: string // "East loop curb"
   kinds: TripKind[] // what this curb can be used for
   polygon: LatLng[] // the curb area, drawn on the map
   stopPoint: LatLng // the exact point the car targets
-  entrance: Entrance // the door this curb leads to
-  rooms: string[] // room patterns this entrance serves, e.g. ["1xx", "2xx"]; empty = any
-  ownerId: string | null
-  basedOnZoneId?: string // set when a personal zone customizes a default one
-  hidden?: boolean // personal "hide this default zone" marker
+  ownerId: string | null // set only for personal zones
+  basedOnZoneId?: string // a personal zone that replaces/customizes another zone
+  hidden?: boolean // personal marker meaning "hide basedOnZoneId for me"
+  audit?: CurbAudit
 }
 
 /** A road someone reported closed. Shared with everyone. */
@@ -64,10 +82,16 @@ export type User = {
   profile: WalkingProfile
 }
 
-/** One ranked choice for where the car should stop. */
-export type StopOption = {
-  zone: Zone
+/** How you're getting there: by robotaxi (drop-off / pickup) or on foot. */
+export type TravelMode = TripKind | 'walk'
+
+/** One ranked door to walk to (walk mode). */
+export type DoorOption = {
+  entrance: Entrance
   walkSeconds: number
   reason: string
   warnings: string[] // "Access road reported closed", "Stairs at this entrance"
 }
+
+/** One ranked choice for where the car should stop, and the door it leads to. */
+export type StopOption = DoorOption & { zone: Zone }

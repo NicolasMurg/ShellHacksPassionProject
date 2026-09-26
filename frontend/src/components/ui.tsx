@@ -1,4 +1,4 @@
-﻿import type { ButtonHTMLAttributes, ReactNode } from 'react'
+import type { ButtonHTMLAttributes, ReactNode } from 'react'
 import { cx } from './cx'
 
 
@@ -111,7 +111,7 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
         <div className="flex items-center justify-between">
           <h2 className="m-0 text-lg font-extrabold tracking-tight">{title}</h2>
           <button type="button" onClick={onClose} aria-label="Close" className="size-9 rounded-full text-xl text-muted hover:text-fg">
-            Ã—
+            ×
           </button>
         </div>
         {children}

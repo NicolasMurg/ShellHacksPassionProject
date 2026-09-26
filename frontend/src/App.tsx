@@ -1,4 +1,4 @@
-import { APIProvider } from '@vis.gl/react-google-maps'
+import { APIProvider, useMap } from '@vis.gl/react-google-maps'
 import { useMemo, useState } from 'react'
 import { AccountMenu, LoginModal, ProfileModal } from './components/Account'
 import { ClosurePanel } from './components/ClosurePanel'
@@ -6,12 +6,15 @@ import { DropoffPanel } from './components/DropoffPanel'
 import { EditPanel } from './components/EditPanel'
 import { MapCanvas, type Tool } from './components/MapCanvas'
 import { Sheet } from './components/ui'
-import { rankStops } from './planner'
+import { floorOf, rankDoors, rankStops } from './planner'
 import { parseDestination, type Destination } from './search'
 import { AuthProvider, useAuth } from './state/auth'
+import { CAMPUS_CENTER, CAMPUS_GATE, WALK_DEMO_START } from './data/campus'
+import { distanceMeters } from './geo'
 import { useCampus, useClosures, useZones } from './state/data'
-import type { LatLng, TripKind, Zone } from './types'
-import { learn, needsStepFree } from './walking'
+import { useGeolocation, useRoute, type Geo } from './state/routing'
+import type { DoorOption, LatLng, TravelMode, TripKind, Zone } from './types'
+import { learn, needsStepFree, walkSecondsForPath } from './walking'
 
 const API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined
 
@@ -51,10 +54,13 @@ function Doorstep() {
   // Drop-off planning
   const [destination, setDestination] = useState<Destination>()
   const [searchError, setSearchError] = useState<string>()
-  const [kind, setKind] = useState<TripKind>('dropoff')
+  const [mode, setMode] = useState<TravelMode>('dropoff')
   const [stepFreeChoice, setStepFreeChoice] = useState<boolean>()
   const [selectedZoneId, setSelectedZoneId] = useState<string>()
   const [confirmedZoneId, setConfirmedZoneId] = useState<string>()
+  const [selectedDoorId, setSelectedDoorId] = useState<string>()
+  const walking = mode === 'walk'
+  const kind: TripKind = mode === 'pickup' ? 'pickup' : 'dropoff'
 
   // Zone editing
   const [editingZoneId, setEditingZoneId] = useState<string>()
@@ -64,9 +70,10 @@ function Doorstep() {
 
   const options = useMemo(
     () =>
-      destination
+      destination && !walking
         ? rankStops({
             zones,
+            entrances: campus.entrances,
             buildingId: destination.building.id,
             room: destination.room,
             kind,
@@ -75,7 +82,7 @@ function Doorstep() {
             closures: closureStore.closures,
           })
         : [],
-    [destination, zones, kind, stepFree, user?.profile, closureStore.closures],
+    [destination, walking, zones, campus.entrances, kind, stepFree, user?.profile, closureStore.closures],
   )
 
   const activeZoneId =
@@ -84,6 +91,36 @@ function Doorstep() {
       : options.some((o) => o.zone.id === selectedZoneId)
         ? selectedZoneId
         : options[0]?.zone.id
+  const activeOption = panel === 'dropoff' ? options.find((o) => o.zone.id === activeZoneId) : undefined
+
+  const geo = useGeolocation()
+
+  // Walk mode starts from your GPS when you're on campus, otherwise from a demo spot.
+  const onCampus = geo.position && distanceMeters(geo.position, CAMPUS_CENTER) < 3000
+  const walkStart = onCampus && geo.position ? { location: geo.position, fromGps: true, label: 'your location' } : { ...WALK_DEMO_START, fromGps: false }
+
+  const doors =
+    destination && walking
+      ? rankDoors({ entrances: destination.building.entrances, room: destination.room, origin: walkStart.location, stepFree, profile: user?.profile })
+      : []
+  const activeDoor =
+    panel === 'dropoff' && walking ? (doors.find((d) => d.entrance.id === selectedDoorId) ?? doors[0]) : undefined
+
+  // Routes. Car: from you (or the campus gate without GPS) to the curb, then walk curb → door.
+  // Walk mode: walk from you straight to the door.
+  const driveFrom = geo.position ?? CAMPUS_GATE
+  const drive = useRoute('DRIVING', activeOption && driveFrom, activeOption?.zone.stopPoint)
+  const walkFrom = activeDoor ? walkStart.location : activeOption?.zone.stopPoint
+  const walkTo = (activeDoor ?? activeOption)?.entrance.location
+  const walk = useRoute('WALKING', walkFrom, walkTo)
+
+  // Once Google has the real walking path, re-estimate the selected option with its true length.
+  const refine = <T extends DoorOption>(o: T): T =>
+    walk
+      ? { ...o, walkSeconds: walkSecondsForPath(walk.meters, user?.profile, { floors: floorOf(destination?.room ?? ''), stairs: !o.entrance.accessible }) }
+      : o
+  const shownOptions = options.map((o) => (o === activeOption ? refine(o) : o))
+  const shownDoors = doors.map((d) => (d === activeDoor ? refine(d) : d))
 
   const requireUser = (then: () => void) => {
     if (user) then()
@@ -104,6 +141,7 @@ function Doorstep() {
       setDestination(parseDestination(text, campus.buildings))
       setSearchError(undefined)
       setSelectedZoneId(undefined)
+      setSelectedDoorId(undefined)
       setConfirmedZoneId(undefined)
     } catch (e) {
       setDestination(undefined)
@@ -143,11 +181,18 @@ function Doorstep() {
     <div className="fixed inset-0">
       <MapCanvas
         buildings={campus.buildings}
+        entrances={campus.entrances}
         zones={zones}
         closures={closureStore.closures}
         destination={panel === 'dropoff' ? destination?.building : undefined}
-        selectedZoneId={activeZoneId}
-        editingZoneId={editingZone && editingZone.ownerId !== null ? editingZone.id : undefined}
+        selectedZoneId={walking && panel === 'dropoff' ? undefined : activeZoneId}
+        focusEntranceId={activeDoor?.entrance.id}
+        walkMode={walking && panel === 'dropoff'}
+        walkStart={activeDoor && !walkStart.fromGps ? walkStart : undefined}
+        editingZoneId={editingZone?.source === 'personal' ? editingZone.id : undefined}
+        me={geo.position && { position: geo.position, accuracy: geo.accuracy }}
+        drivePath={walking ? undefined : drive?.path}
+        walkPath={walk?.path ?? (walkFrom && walkTo ? [walkFrom, walkTo] : undefined)}
         editMode={panel === 'edit'}
         tool={tool}
         draftClosure={draftClosure}
@@ -157,19 +202,23 @@ function Doorstep() {
           setDestination({ building: b, room: '' })
           setSearchError(undefined)
           setSelectedZoneId(undefined)
+          setSelectedDoorId(undefined)
           setConfirmedZoneId(undefined)
         }}
         onZoneChange={(z) => void zoneStore.upsert(z)}
       />
 
-      <div className="absolute right-4 top-[max(16px,env(safe-area-inset-top))] z-30 flex items-center gap-2">
-        <Legend />
-        <AccountMenu
-          onSignIn={() => setModal('login')}
-          onProfile={() => setModal('profile')}
-          onEditZones={() => openPanel('edit')}
-          onReportClosure={() => openPanel('closure')}
-        />
+      <div className="absolute right-4 top-[max(16px,env(safe-area-inset-top))] z-30 flex flex-col items-end gap-2">
+        <div className="flex items-center gap-2">
+          <Legend />
+          <AccountMenu
+            onSignIn={() => setModal('login')}
+            onProfile={() => setModal('profile')}
+            onEditZones={() => openPanel('edit')}
+            onReportClosure={() => openPanel('closure')}
+          />
+        </div>
+        <LocateButton geo={geo} />
       </div>
 
       <Sheet expanded={expanded} onToggle={() => setExpanded((v) => !v)}>
@@ -183,18 +232,24 @@ function Doorstep() {
           <DropoffPanel
             user={user}
             destination={destination}
-            kind={kind}
-            onKind={(k) => {
-              setKind(k)
+            mode={mode}
+            onMode={(m) => {
+              setMode(m)
               setConfirmedZoneId(undefined)
             }}
+            doors={shownDoors}
+            selectedDoorId={activeDoor?.entrance.id}
+            onSelectDoor={setSelectedDoorId}
+            walkStart={walkStart}
             stepFree={stepFree}
             onStepFree={setStepFreeChoice}
-            options={options}
+            options={shownOptions}
             selectedZoneId={activeZoneId}
             onSelect={setSelectedZoneId}
             confirmedZoneId={confirmedZoneId}
             onConfirm={setConfirmedZoneId}
+            drive={drive && { seconds: drive.seconds, fromGps: !!geo.position }}
+            generatingCurbs={campus.generating}
             onSearch={search}
             onClear={() => {
               setDestination(undefined)
@@ -258,6 +313,30 @@ function Doorstep() {
       {modal === 'login' && <LoginModal onClose={() => setModal(undefined)} onNewUser={() => setModal('profile')} />}
       {modal === 'profile' && <ProfileModal onClose={() => setModal(undefined)} />}
     </div>
+  )
+}
+
+/** Centers the map on your GPS position. */
+function LocateButton({ geo }: { geo: Geo }) {
+  const map = useMap()
+  const label = geo.position ? 'Show my location' : (geo.error ?? 'Finding your location…')
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      disabled={!geo.position}
+      onClick={() => {
+        if (!map || !geo.position) return
+        map.panTo(geo.position)
+        if ((map.getZoom() ?? 0) < 17) map.setZoom(17)
+      }}
+      className="grid size-11 place-items-center rounded-full border border-line bg-surface text-lg shadow-[var(--shadow-float)] hover:border-accent disabled:opacity-50"
+    >
+      <span aria-hidden className={geo.position ? 'text-[#4c8dff]' : 'text-muted'}>
+        ◎
+      </span>
+    </button>
   )
 }
 

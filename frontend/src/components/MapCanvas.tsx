@@ -1,8 +1,8 @@
-import { AdvancedMarker, ColorScheme, Map, Polygon, Polyline, useMap } from '@vis.gl/react-google-maps'
+import { AdvancedMarker, Circle, ColorScheme, Map, Polygon, Polyline, useMap } from '@vis.gl/react-google-maps'
 import { useEffect } from 'react'
 import { CAMPUS_CENTER } from '../data/campus'
 import { centroid, distanceMeters } from '../geo'
-import type { Building, LatLng, RoadClosure, Zone } from '../types'
+import type { Building, Entrance, LatLng, RoadClosure, Zone } from '../types'
 
 // Keep in sync with the @theme colors in index.css (the map needs raw hex).
 const COLOR = {
@@ -10,21 +10,32 @@ const COLOR = {
   personal: '#a78bfa',
   selected: '#ffb547',
   closed: '#ff5d5d',
-  route: '#2ee6d6',
+  drive: '#2ee6d6',
+  walk: '#ffffff',
+  me: '#4c8dff',
 }
 
 export type Tool = 'none' | 'addZone' | 'drawClosure'
 
 type Props = {
   buildings: Building[]
+  entrances: globalThis.Map<string, Entrance>
   zones: Zone[]
   closures: RoadClosure[]
   destination?: Building
   selectedZoneId?: string
+  /** Walk mode: the chosen door (there's no zone). */
+  focusEntranceId?: string
+  walkMode: boolean
+  /** Where a walk starts when it isn't your GPS position. */
+  walkStart?: { location: LatLng; label: string }
   editingZoneId?: string
   editMode: boolean
   tool: Tool
   draftClosure: LatLng[]
+  me?: { position: LatLng; accuracy?: number }
+  drivePath?: LatLng[]
+  walkPath?: LatLng[]
   onMapClick: (point: LatLng) => void
   onSelectZone: (zone: Zone) => void
   onSelectBuilding: (b: Building) => void
@@ -34,14 +45,27 @@ type Props = {
 const MAP_ID = import.meta.env.VITE_GOOGLE_MAP_ID || 'DEMO_MAP_ID'
 
 export function MapCanvas(props: Props) {
-  const { buildings, zones, closures, destination, selectedZoneId, editingZoneId, editMode, tool, draftClosure } = props
+  const { buildings, entrances, zones, closures, destination, selectedZoneId, editingZoneId, editMode, tool, draftClosure, me } = props
   const selected = zones.find((z) => z.id === selectedZoneId)
+  const selectedEntranceId = selected?.entranceId ?? props.focusEntranceId
 
-  useFitTo(destination, zones)
+  const selectedDoor = selectedEntranceId ? entrances.get(selectedEntranceId) : undefined
+  // In walk mode also fit where the walk starts (demo start, or you).
+  const walkOrigin = props.walkMode ? (props.walkStart?.location ?? me?.position) : undefined
+  useFitTo(destination, editMode ? undefined : selected, selectedDoor, walkOrigin)
 
-  // Markers only where they help: the destination's zones, or your own zones while editing.
-  const showMarkersFor = (z: Zone) =>
-    z.id === selectedZoneId || z.id === editingZoneId || z.buildingId === destination?.id || (editMode && z.ownerId !== null)
+  // Car markers only where they help: the destination's zones, or your own zones while editing.
+  const showStopFor = (z: Zone) =>
+    !props.walkMode &&
+    (z.id === selectedZoneId || z.id === editingZoneId || z.buildingId === destination?.id || (editMode && z.source === 'personal'))
+
+  // Doors: the destination's, plus the selected zone's.
+  const doors = [
+    ...(destination?.entrances ?? []),
+    ...(selectedEntranceId && !destination?.entrances.some((e) => e.id === selectedEntranceId)
+      ? [entrances.get(selectedEntranceId)].filter((e): e is Entrance => !!e)
+      : []),
+  ]
 
   return (
     <Map
@@ -51,8 +75,6 @@ export function MapCanvas(props: Props) {
       defaultCenter={CAMPUS_CENTER}
       defaultZoom={17}
       // Flat 2D map: no tilting or rotating.
-      tilt={0}
-      heading={0}
       tiltInteractionEnabled={false}
       headingInteractionEnabled={false}
       gestureHandling="greedy"
@@ -64,7 +86,7 @@ export function MapCanvas(props: Props) {
       {!destination &&
         !editMode &&
         buildings.map((b) => (
-          <AdvancedMarker key={b.id} position={b.location} onClick={() => props.onSelectBuilding(b)}>
+          <AdvancedMarker key={b.id} position={b.location} onClick={() => props.onSelectBuilding(b)} title={b.name}>
             <div className="pin-label transition-transform hover:scale-110 hover:border-accent">{b.code}</div>
           </AdvancedMarker>
         ))}
@@ -77,33 +99,54 @@ export function MapCanvas(props: Props) {
         </AdvancedMarker>
       )}
 
+      {/* Car route: you → curb */}
+      {props.drivePath && !editMode && (
+        <>
+          <Polyline path={props.drivePath} strokeColor="#000000" strokeOpacity={0.5} strokeWeight={9} clickable={false} zIndex={3} />
+          <Polyline path={props.drivePath} strokeColor={COLOR.drive} strokeOpacity={1} strokeWeight={5} clickable={false} zIndex={4} />
+        </>
+      )}
+
+      {/* Walking route: curb → door */}
+      {props.walkPath && !editMode && (
+        <Polyline
+          path={props.walkPath}
+          strokeOpacity={0}
+          clickable={false}
+          zIndex={6}
+          icons={[
+            {
+              icon: { path: google.maps.SymbolPath.CIRCLE, fillColor: COLOR.walk, fillOpacity: 1, strokeOpacity: 0, scale: 2.6 },
+              offset: '0',
+              repeat: '10px',
+            },
+          ]}
+        />
+      )}
+
       {zones.map((z) => (
         <ZoneShape
           key={z.id}
           zone={z}
           selected={z.id === selectedZoneId}
           editing={z.id === editingZoneId}
-          showMarkers={showMarkersFor(z)}
+          showStop={showStopFor(z)}
           interactive={tool === 'none'}
           onSelect={() => props.onSelectZone(z)}
           onChange={props.onZoneChange}
         />
       ))}
 
-      {selected && !editMode && (
-        <Polyline
-          path={[selected.stopPoint, selected.entrance.location]}
-          strokeOpacity={0}
-          clickable={false}
-          icons={[
-            {
-              icon: { path: 'M 0,-1 0,1', strokeOpacity: 1, strokeColor: COLOR.route, strokeWeight: 4, scale: 3 },
-              offset: '0',
-              repeat: '14px',
-            },
-          ]}
-        />
-      )}
+      {doors.map((e) => {
+        const chosen = e.id === selectedEntranceId
+        return (
+          <AdvancedMarker key={e.id} position={e.location} zIndex={chosen ? 35 : 15} title={e.label}>
+            <div className="pin-door" style={{ borderColor: chosen ? COLOR.selected : undefined, opacity: chosen ? 1 : 0.8 }}>
+              {e.accessible ? '♿' : '🚪'}
+            </div>
+          </AdvancedMarker>
+        )
+      })}
 
       {closures.map((c) => (
         <ClosureLine key={c.id} path={c.path} label={c.reason} />
@@ -119,6 +162,33 @@ export function MapCanvas(props: Props) {
           ))}
         </>
       )}
+
+      {props.walkStart && (
+        <AdvancedMarker position={props.walkStart.location} zIndex={55} title={`Walk starts at ${props.walkStart.label}`}>
+          <div className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-1 text-[11px] font-bold shadow-[var(--shadow-float)]">
+            <span aria-hidden className="size-2.5 rounded-full bg-[#4c8dff]" />
+            Start
+          </div>
+        </AdvancedMarker>
+      )}
+
+      {me && (
+        <>
+          {me.accuracy && me.accuracy < 200 && (
+            <Circle
+              center={me.position}
+              radius={me.accuracy}
+              strokeOpacity={0}
+              fillColor={COLOR.me}
+              fillOpacity={0.12}
+              clickable={false}
+            />
+          )}
+          <AdvancedMarker position={me.position} zIndex={60} title="You are here">
+            <div className="size-[18px] rounded-full border-[3px] border-white bg-[#4c8dff] shadow-[0_0_0_8px_rgb(76_141_255/0.25)]" />
+          </AdvancedMarker>
+        </>
+      )}
     </Map>
   )
 }
@@ -127,7 +197,7 @@ function ZoneShape({
   zone,
   selected,
   editing,
-  showMarkers,
+  showStop,
   interactive,
   onSelect,
   onChange,
@@ -135,12 +205,12 @@ function ZoneShape({
   zone: Zone
   selected: boolean
   editing: boolean
-  showMarkers: boolean
+  showStop: boolean
   interactive: boolean
   onSelect: () => void
   onChange: (z: Zone) => void
 }) {
-  const personal = zone.ownerId !== null
+  const personal = zone.source === 'personal'
   const color = selected ? COLOR.selected : personal ? COLOR.personal : COLOR.shared
 
   const handlePaths = (paths: google.maps.LatLng[][]) => {
@@ -149,15 +219,15 @@ function ZoneShape({
     // If the whole shape was dragged, move the stop point with it.
     const before = centroid(zone.polygon)
     const after = centroid(polygon)
-    const moved = distanceMeters(before, after) > 0.5 && polygon.length === zone.polygon.length &&
+    const moved =
+      distanceMeters(before, after) > 0.5 &&
+      polygon.length === zone.polygon.length &&
       polygon.every((p, i) => Math.abs(p.lat - zone.polygon[i].lat - (after.lat - before.lat)) < 1e-7)
     const stopPoint = moved
       ? { lat: zone.stopPoint.lat + after.lat - before.lat, lng: zone.stopPoint.lng + after.lng - before.lng }
       : zone.stopPoint
     onChange({ ...zone, polygon, stopPoint })
   }
-
-  const dragTo = (e: google.maps.MapMouseEvent) => e.latLng?.toJSON()
 
   return (
     <>
@@ -175,41 +245,22 @@ function ZoneShape({
         onClick={onSelect}
         onPathsChanged={editing ? handlePaths : undefined}
       />
-      {showMarkers && (
-        <>
-          <AdvancedMarker
-            position={zone.stopPoint}
-            zIndex={selected ? 40 : 20}
-            draggable={editing}
-            onClick={onSelect}
-            onDragEnd={(e) => {
-              const p = dragTo(e)
-              if (p) onChange({ ...zone, stopPoint: p })
-            }}
-            title={editing ? 'Drag to move where the car stops' : zone.name}
-          >
-            <div
-              className="pin-stop"
-              style={{ borderColor: color, background: selected ? color : undefined }}
-            >
-              🚗
-            </div>
-          </AdvancedMarker>
-          <AdvancedMarker
-            position={zone.entrance.location}
-            zIndex={selected ? 35 : 15}
-            draggable={editing}
-            onDragEnd={(e) => {
-              const p = dragTo(e)
-              if (p) onChange({ ...zone, entrance: { ...zone.entrance, location: p } })
-            }}
-            title={editing ? 'Drag to move the entrance' : zone.entrance.label}
-          >
-            <div className="pin-door" style={{ borderColor: selected || editing ? color : undefined }}>
-              {zone.entrance.accessible ? '♿' : '🚪'}
-            </div>
-          </AdvancedMarker>
-        </>
+      {showStop && (
+        <AdvancedMarker
+          position={zone.stopPoint}
+          zIndex={selected ? 40 : 20}
+          draggable={editing}
+          onClick={onSelect}
+          onDragEnd={(e) => {
+            const p = e.latLng?.toJSON()
+            if (p) onChange({ ...zone, stopPoint: p })
+          }}
+          title={editing ? 'Drag to move where the car stops' : zone.name}
+        >
+          <div className="pin-stop" style={{ borderColor: color, background: selected ? color : undefined }}>
+            🚗
+          </div>
+        </AdvancedMarker>
       )}
     </>
   )
@@ -231,10 +282,12 @@ function ClosureLine({ path, label }: { path: LatLng[]; label: string }) {
   )
 }
 
-/** Zoom to the destination building and its zones. */
-function useFitTo(destination: Building | undefined, zones: Zone[]) {
+const MAX_FIT_ZOOM = 18
+
+/** Zoom to the destination building, the chosen curb and its door. */
+function useFitTo(destination?: Building, selected?: Zone, door?: Entrance, origin?: LatLng) {
   const map = useMap()
-  const destinationId = destination?.id
+  const key = `${destination?.id}|${selected?.id}|${door?.id}|${origin ? 'walk' : 'car'}`
 
   useEffect(() => {
     if (!map) return
@@ -245,18 +298,24 @@ function useFitTo(destination: Building | undefined, zones: Zone[]) {
     }
     const bounds = new google.maps.LatLngBounds()
     bounds.extend(destination.location)
-    for (const z of zones) {
-      if (z.buildingId !== destination.id) continue
-      bounds.extend(z.stopPoint)
-      bounds.extend(z.entrance.location)
-    }
-    const desktop = window.matchMedia('(min-width: 900px)').matches
-    map.fitBounds(
-      bounds,
-      desktop
-        ? { top: 90, right: 80, bottom: 80, left: 470 }
-        : { top: 90, right: 40, bottom: Math.round(window.innerHeight * 0.55), left: 40 },
-    )
-    // Only refit when the destination changes, not on every zone edit.
-  }, [map, destinationId]) // eslint-disable-line react-hooks/exhaustive-deps
+    for (const e of destination.entrances) bounds.extend(e.location)
+    if (selected) bounds.extend(selected.stopPoint)
+    if (door) bounds.extend(door.location)
+    if (origin && distanceMeters(origin, destination.location) < 3000) bounds.extend(origin)
+    map.fitBounds(bounds, mapPadding())
+    // Doors are close together, so don't zoom in past street level.
+    const listener = google.maps.event.addListenerOnce(map, 'idle', () => {
+      if ((map.getZoom() ?? 0) > MAX_FIT_ZOOM) map.setZoom(MAX_FIT_ZOOM)
+    })
+    return () => listener.remove()
+    // Refit only when the destination or chosen zone changes, not on every render.
+  }, [map, key]) // eslint-disable-line react-hooks/exhaustive-deps
+}
+
+/** Leave room for the panel so fitted content isn't hidden behind it. */
+function mapPadding(): google.maps.Padding {
+  const desktop = window.matchMedia('(min-width: 900px)').matches
+  return desktop
+    ? { top: 90, right: 80, bottom: 80, left: 470 }
+    : { top: 90, right: 40, bottom: Math.round(window.innerHeight * 0.55), left: 40 }
 }

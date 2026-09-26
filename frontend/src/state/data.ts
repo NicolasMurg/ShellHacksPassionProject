@@ -1,28 +1,61 @@
+import { useMapsLibrary } from '@vis.gl/react-google-maps'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import * as api from '../api'
+import { generateCurbs } from '../curbs'
 import { distanceMeters, rect } from '../geo'
 import { visibleZones } from '../planner'
-import type { Building, LatLng, RoadClosure, User, Zone } from '../types'
+import type { Building, Entrance, LatLng, RoadClosure, User, Zone } from '../types'
 
-/** Buildings and default zones (loaded once). */
+/** Buildings, their entrances, and the shared zones (generated curbs + design-team zones). */
 export function useCampus() {
   const [buildings, setBuildings] = useState<Building[]>([])
-  const [defaults, setDefaults] = useState<Zone[]>([])
+  const [designZones, setDesignZones] = useState<Zone[]>([])
+  const [generated, setGenerated] = useState<Zone[]>([])
   const [error, setError] = useState<string>()
+  const routes = useMapsLibrary('routes')
 
   useEffect(() => {
     Promise.all([api.getBuildings(), api.getDefaultZones()])
       .then(([b, z]) => {
         setBuildings(b)
-        setDefaults(z)
+        setDesignZones(z)
       })
       .catch((e: Error) => setError(e.message))
   }, [])
 
-  return { buildings, defaults, error }
+  // Entrances the design team already covered don't get a generated curb.
+  const covered = useMemo(() => new Set(designZones.map((z) => z.entranceId)), [designZones])
+
+  // In mock mode the frontend generates curbs; with the real backend, /api/zones already includes them.
+  useEffect(() => {
+    if (!api.USE_MOCK || !routes || buildings.length === 0) return
+    let cancelled = false
+    void generateCurbs(
+      new routes.DirectionsService(),
+      buildings,
+      covered,
+      (zone) => setGenerated((g) => [...g.filter((z) => z.id !== zone.id), zone]),
+      () => cancelled,
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [routes, buildings, covered])
+
+  const entrances = useMemo(() => {
+    const byId = new Map<string, Entrance>()
+    for (const b of buildings) for (const e of b.entrances) byId.set(e.id, e)
+    return byId
+  }, [buildings])
+
+  const defaults = useMemo(() => [...designZones, ...generated], [designZones, generated])
+  const expected = [...entrances.keys()].filter((id) => !covered.has(id)).length
+  const generating = api.USE_MOCK && buildings.length > 0 && generated.length < expected
+
+  return { buildings, entrances, defaults, generating, error }
 }
 
-/** The signed-in user's personal zones, merged over the defaults. */
+/** The signed-in user's personal zones, merged over the shared ones. */
 export function useZones(defaults: Zone[], buildings: Building[], user?: User, token?: string) {
   const [mine, setMine] = useState<{ token?: string; zones: Zone[] }>({ zones: [] })
 
@@ -58,27 +91,32 @@ export function useZones(defaults: Zone[], buildings: Building[], user?: User, t
     [token],
   )
 
-  /** Make an editable personal copy of a default zone. Returns the copy. */
+  const personalCopy = useCallback(
+    (zone: Zone, extra: Partial<Zone>): Zone | undefined =>
+      user ? { ...zone, id: api.newId('zone'), source: 'personal', ownerId: user.id, basedOnZoneId: zone.id, ...extra } : undefined,
+    [user],
+  )
+
+  /** Make an editable personal copy of a shared zone. Returns the copy. */
   const customize = useCallback(
     (zone: Zone): Zone | undefined => {
-      if (!user) return
-      const copy: Zone = { ...zone, id: api.newId('zone'), ownerId: user.id, basedOnZoneId: zone.id, name: `${zone.name} (mine)` }
-      void upsert(copy)
+      const copy = personalCopy(zone, { name: `${zone.name} (mine)` })
+      if (copy) void upsert(copy)
       return copy
     },
-    [user, upsert],
+    [personalCopy, upsert],
   )
 
-  /** Hide a default zone for this user only. */
+  /** Hide a shared zone for this user only. */
   const hideDefault = useCallback(
     (zone: Zone) => {
-      if (!user) return
-      void upsert({ ...zone, id: api.newId('zone'), ownerId: user.id, basedOnZoneId: zone.id, hidden: true })
+      const marker = personalCopy(zone, { hidden: true })
+      if (marker) void upsert(marker)
     },
-    [user, upsert],
+    [personalCopy, upsert],
   )
 
-  /** Undo a hide or customization so the default zone shows again. */
+  /** Undo a hide or customization so the shared zone shows again. */
   const restoreDefault = useCallback(
     (defaultZoneId: string) => {
       personal.filter((z) => z.basedOnZoneId === defaultZoneId).forEach((z) => void remove(z))
@@ -86,20 +124,22 @@ export function useZones(defaults: Zone[], buildings: Building[], user?: User, t
     [personal, remove],
   )
 
-  /** Drop a brand-new personal zone where the user tapped. */
+  /** Drop a brand-new personal zone where the user tapped, linked to the nearest door. */
   const createAt = useCallback(
     (point: LatLng): Zone | undefined => {
-      if (!user || buildings.length === 0) return
-      const nearest = [...buildings].sort((a, b) => distanceMeters(point, a.location) - distanceMeters(point, b.location))[0]
+      if (!user) return
+      const doors = buildings.flatMap((b) => b.entrances)
+      if (doors.length === 0) return
+      const nearest = doors.reduce((a, b) => (distanceMeters(point, a.location) <= distanceMeters(point, b.location) ? a : b))
       const zone: Zone = {
         id: api.newId('zone'),
-        buildingId: nearest.id,
-        name: `My spot at ${nearest.code}`,
+        buildingId: nearest.buildingId,
+        entranceId: nearest.id,
+        source: 'personal',
+        name: 'My spot',
         kinds: ['dropoff', 'pickup'],
         polygon: rect(point, 18, 7),
         stopPoint: point,
-        entrance: { label: 'My entrance', location: nearest.location, accessible: true },
-        rooms: [],
         ownerId: user.id,
       }
       void upsert(zone)

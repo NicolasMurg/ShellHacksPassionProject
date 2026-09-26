@@ -38,6 +38,21 @@ export function rect(center: LatLng, widthM: number, heightM: number): LatLng[] 
   return [offset(center, -w, h), offset(center, w, h), offset(center, w, -h), offset(center, -w, -h)]
 }
 
+/** A rectangle centered on a point and rotated to a compass bearing (e.g. along a road). */
+export function orientedRect(center: LatLng, lengthM: number, widthM: number, bearingDeg: number): LatLng[] {
+  const t = toRad(bearingDeg)
+  const along = { e: Math.sin(t), n: Math.cos(t) } // unit vector along the road
+  const across = { e: along.n, n: -along.e }
+  const l = lengthM / 2
+  const w = widthM / 2
+  return [
+    [l, w],
+    [l, -w],
+    [-l, -w],
+    [-l, w],
+  ].map(([a, c]) => offset(center, a * along.e + c * across.e, a * along.n + c * across.n))
+}
+
 export function centroid(points: LatLng[]): LatLng {
   const n = points.length || 1
   return {

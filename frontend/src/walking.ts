@@ -63,6 +63,15 @@ export function walkSeconds(
   return outdoor + indoor + stairs
 }
 
+/** Same estimate, but from a real walking-path length (e.g. from Google), so no path factor. */
+export function walkSecondsForPath(
+  pathMeters: number,
+  profile: WalkingProfile | undefined,
+  opts: { floors?: number; stairs?: boolean } = {},
+): number {
+  return walkSeconds(pathMeters / PATH_FACTOR, profile, opts)
+}
+
 /**
  * Update the learned factor after a trip ("that took longer than you said").
  * Moves gently so one odd trip doesn't swing future estimates much.

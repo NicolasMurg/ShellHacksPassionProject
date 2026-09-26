@@ -1,10 +1,10 @@
-import { BUILDINGS, DEFAULT_ZONES } from './data/campus'
+import { BUILDINGS, DESIGN_ZONES } from './data/campus'
 import type { Building, LatLng, RoadClosure, User, WalkingProfile, Zone } from './types'
 
 // Talks to the Express backend. Until it's ready (VITE_USE_MOCK !== 'false'),
 // everything is stored in this browser's localStorage so the UI is fully usable.
 
-const USE_MOCK = import.meta.env.VITE_USE_MOCK !== 'false'
+export const USE_MOCK = import.meta.env.VITE_USE_MOCK !== 'false'
 
 type Session = { user: User; token: string }
 
@@ -98,28 +98,29 @@ export async function getBuildings(): Promise<Building[]> {
   return BUILDINGS
 }
 
+/** Shared zones: generated curbs + design-team zones. In mock mode only design zones; curbs.ts generates the rest. */
 export async function getDefaultZones(): Promise<Zone[]> {
   if (!USE_MOCK) return http('GET', '/api/zones')
-  return DEFAULT_ZONES
+  return DESIGN_ZONES
 }
 
 export async function getMyZones(token: string): Promise<Zone[]> {
   if (!USE_MOCK) return http('GET', '/api/me/zones', token)
-  return load<Zone[]>(`zones.${token}`, [])
+  return load<Zone[]>(`zones.v2.${token}`, [])
 }
 
 /** Create or update one of the user's personal zones. */
 export async function saveMyZone(token: string, zone: Zone): Promise<Zone> {
   if (!USE_MOCK) return http('PUT', `/api/me/zones/${zone.id}`, token, zone)
-  const zones = load<Zone[]>(`zones.${token}`, [])
+  const zones = load<Zone[]>(`zones.v2.${token}`, [])
   const next = zones.some((z) => z.id === zone.id) ? zones.map((z) => (z.id === zone.id ? zone : z)) : [...zones, zone]
-  save(`zones.${token}`, next)
+  save(`zones.v2.${token}`, next)
   return zone
 }
 
 export async function deleteMyZone(token: string, id: string): Promise<void> {
   if (!USE_MOCK) return http('DELETE', `/api/me/zones/${id}`, token)
-  save(`zones.${token}`, load<Zone[]>(`zones.${token}`, []).filter((z) => z.id !== id))
+  save(`zones.v2.${token}`, load<Zone[]>(`zones.v2.${token}`, []).filter((z) => z.id !== id))
 }
 
 export async function getClosures(): Promise<RoadClosure[]> {

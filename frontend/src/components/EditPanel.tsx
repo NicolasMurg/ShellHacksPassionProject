@@ -22,6 +22,7 @@ type Props = {
 export function EditPanel(p: Props) {
   const mine = p.personal.filter((z) => !z.hidden)
   const buildingName = (id: string) => p.buildings.find((b) => b.id === id)?.name ?? id
+  const selectedBuilding = p.buildings.find((b) => b.id === p.selected?.buildingId)
 
   return (
     <>
@@ -46,11 +47,11 @@ export function EditPanel(p: Props) {
         </Button>
       )}
 
-      {p.selected ? (
-        p.selected.ownerId === null ? (
-          <DefaultZoneCard zone={p.selected} building={buildingName(p.selected.buildingId)} onCustomize={p.onCustomize} onHide={p.onHide} />
+      {p.selected && selectedBuilding ? (
+        p.selected.source !== 'personal' ? (
+          <DefaultZoneCard zone={p.selected} building={selectedBuilding} onCustomize={p.onCustomize} onHide={p.onHide} />
         ) : (
-          <ZoneForm zone={p.selected} building={buildingName(p.selected.buildingId)} onChange={p.onUpdate} onDelete={p.onDelete} onClose={() => p.onSelect(undefined)} />
+          <ZoneForm zone={p.selected} building={selectedBuilding} onChange={p.onUpdate} onDelete={p.onDelete} onClose={() => p.onSelect(undefined)} />
         )
       ) : (
         <Notice>Tap any zone on the map to customize it, or pick one of yours below.</Notice>
@@ -99,16 +100,19 @@ function DefaultZoneCard({
   onHide,
 }: {
   zone: Zone
-  building: string
+  building: Building
   onCustomize: (z: Zone) => void
   onHide: (z: Zone) => void
 }) {
+  const door = building.entrances.find((e) => e.id === zone.entranceId)
   return (
     <div className="flex flex-col gap-3 rounded-2xl border border-shared/40 bg-shared/5 p-4">
       <div>
-        <p className="m-0 text-xs font-bold text-shared">Default zone · {building}</p>
+        <p className="m-0 text-xs font-bold text-shared">
+          {zone.source === 'generated' ? 'Auto-generated curb' : 'Design team zone'} · {building.name}
+        </p>
         <h3 className="m-0 mt-1 text-base font-bold">{zone.name}</h3>
-        <p className="m-0 text-sm text-muted">→ {zone.entrance.label}</p>
+        {door && <p className="m-0 text-sm text-muted">→ {door.label}</p>}
       </div>
       <p className="m-0 text-sm">Make your own copy to move or reshape it. Everyone else keeps seeing the original.</p>
       <div className="flex gap-2">
@@ -136,7 +140,7 @@ function ZoneForm({
   onClose,
 }: {
   zone: Zone
-  building: string
+  building: Building
   onChange: (z: Zone) => void
   onDelete: (z: Zone) => void
   onClose: () => void
@@ -145,53 +149,35 @@ function ZoneForm({
     const kinds = on ? [...new Set([...zone.kinds, k])] : zone.kinds.filter((x) => x !== k)
     if (kinds.length > 0) onChange({ ...zone, kinds })
   }
+  const door = building.entrances.find((e) => e.id === zone.entranceId)
 
   return (
     <div className="flex flex-col gap-3.5 rounded-2xl border border-personal/40 bg-personal/5 p-4">
       <div className="flex items-center justify-between">
-        <p className="m-0 text-xs font-bold text-personal">Your zone · {building}</p>
+        <p className="m-0 text-xs font-bold text-personal">Your zone · {building.name}</p>
         <button type="button" onClick={onClose} className="text-sm text-muted hover:text-fg">
           Close
         </button>
       </div>
-      <Notice>Drag the shape or its corners to reshape it. Drag 🚗 to move the stop point and the door to move the entrance.</Notice>
+      <Notice>Drag the shape or its corners to reshape it. Drag 🚗 to move exactly where the car stops.</Notice>
 
       <Field label="Zone name">
         <input className={inputClass} value={zone.name} onChange={(e) => onChange({ ...zone, name: e.target.value })} />
       </Field>
-      <Field label="Entrance">
-        <input
-          className={inputClass}
-          value={zone.entrance.label}
-          onChange={(e) => onChange({ ...zone, entrance: { ...zone.entrance, label: e.target.value } })}
-        />
-      </Field>
-      <Field label="Rooms this is for" hint="Comma-separated, e.g. 1xx, 212, 3xx. Leave empty for any room.">
-        <input
-          className={inputClass}
-          value={zone.rooms.join(', ')}
-          placeholder="Any room"
-          onChange={(e) =>
-            onChange({
-              ...zone,
-              rooms: e.target.value
-                .split(',')
-                .map((r) => r.trim())
-                .filter(Boolean),
-            })
-          }
-        />
+      <Field label="Door you want to use" hint={door ? `${door.accessible ? '♿ Step-free' : 'Has stairs'}${door.rooms.length ? ` · closest to rooms ${door.rooms.join(', ')}` : ''}` : undefined}>
+        <select className={inputClass} value={zone.entranceId} onChange={(e) => onChange({ ...zone, entranceId: e.target.value })}>
+          {building.entrances.map((e) => (
+            <option key={e.id} value={e.id}>
+              {e.label}
+            </option>
+          ))}
+        </select>
       </Field>
       <div className="flex flex-wrap gap-x-5">
         {KINDS.map((k) => (
           <Switch key={k.value} checked={zone.kinds.includes(k.value)} onChange={(on) => toggleKind(k.value, on)} label={k.label} />
         ))}
       </div>
-      <Switch
-        checked={zone.entrance.accessible}
-        onChange={(accessible) => onChange({ ...zone, entrance: { ...zone.entrance, accessible } })}
-        label="♿ Entrance is step-free"
-      />
       <Button variant="danger" onClick={() => onDelete(zone)}>
         {zone.basedOnZoneId ? 'Delete (brings back the default)' : 'Delete zone'}
       </Button>
