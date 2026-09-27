@@ -1,4 +1,4 @@
-import type { ReactNode, SVGProps } from 'react'
+import { useId, type ReactNode, type SVGProps } from 'react'
 
 // One consistent icon set (24×24, rounded 1.8px strokes, currentColor), used
 // instead of emoji so icons match the theme: muted when idle, teal when active.
@@ -159,12 +159,22 @@ export const MapIcon = (p: IconProps) => (
 )
 
 // AI curb check, weather and slope
-export const SparkleIcon = (p: IconProps) => (
-  <Icon {...p}>
-    <path d="M12 3.5c.6 3.9 2.6 5.9 6.5 6.5-3.9.6-5.9 2.6-6.5 6.5-.6-3.9-2.6-5.9-6.5-6.5 3.9-.6 5.9-2.6 6.5-6.5Z" />
-    <path d="M18.5 15.5c.3 1.6 1 2.3 2.5 2.5-1.5.2-2.2.9-2.5 2.5-.3-1.6-1-2.3-2.5-2.5 1.5-.2 2.2-.9 2.5-2.5Z" />
-  </Icon>
-)
+/** Marks anything Gemini did: a filled four-point sparkle in Gemini's blue-to-violet. */
+export function SparkleIcon({ size = 22, ...rest }: IconProps) {
+  const id = useId()
+  return (
+    <svg aria-hidden width={size} height={size} viewBox="0 0 24 24" {...rest}>
+      <defs>
+        <linearGradient id={id} x1="3" y1="21" x2="21" y2="3" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#4c8dff" />
+          <stop offset="0.55" stopColor="#9b72f2" />
+          <stop offset="1" stopColor="#d96fa0" />
+        </linearGradient>
+      </defs>
+      <path d="M12 2c.5 5.4 4.6 9.5 10 10-5.4.5-9.5 4.6-10 10-.5-5.4-4.6-9.5-10-10 5.4-.5 9.5-4.6 10-10Z" fill={`url(#${id})`} />
+    </svg>
+  )
+}
 
 export const CheckIcon = (p: IconProps) => (
   <Icon {...p}>

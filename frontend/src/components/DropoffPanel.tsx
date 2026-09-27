@@ -91,11 +91,12 @@ export function DropoffPanel(p: Props) {
       />
 
       <form role="search" onSubmit={submit} className="flex h-13 items-center gap-1.5 rounded-full border border-line bg-raised pl-4 pr-1.5 focus-within:border-accent">
-        {looksLikeSentence(text) ? (
-          <SparkleIcon size={18} className="shrink-0 text-accent" aria-label="Gemini will read this request" />
-        ) : (
-          <span aria-hidden className="text-lg text-muted">⌕</span>
-        )}
+        {/* Lights up once you type a sentence: that's when Gemini reads the request. */}
+        <SparkleIcon
+          size={18}
+          className={cx('shrink-0 transition-opacity', looksLikeSentence(text) ? 'opacity-100' : 'opacity-45')}
+        />
+        {looksLikeSentence(text) && <span className="sr-only">Gemini will read this request</span>}
         <input
           value={text}
           onChange={(e) => setText(e.target.value)}
