@@ -51,7 +51,7 @@ export function AccountMenu({ onSignIn, onPreferences, onEditZones, onReportClos
         aria-expanded={open}
         aria-label="Account"
         onClick={() => setOpen((o) => !o)}
-        className="grid size-11 place-items-center rounded-full bg-brand font-extrabold text-accent-ink shadow-[var(--shadow-float)]"
+        className="grid size-11 place-items-center rounded-full bg-accent font-extrabold text-accent-ink shadow-[var(--shadow-float)]"
       >
         {initials || '?'}
       </button>

@@ -92,14 +92,14 @@ function ShootingStars({ streaks }: { streaks: { top: string; left: string; dela
 }
 
 /** A palm tree silhouette standing at (x, bottom of a 300-tall viewBox), leaning by `lean`. */
-function Palm({ x, height, lean }: { x: number; height: number; lean: number }) {
+function Palm({ x, height, lean, color = '#03060c' }: { x: number; height: number; lean: number; color?: string }) {
   const top = 300 - height
   const tx = x + lean // where the trunk ends and the fronds start
   const frond = (dx: number, dy: number, droop: number) =>
     `M${tx} ${top} C ${tx + dx * 0.4} ${top + dy * 0.2 - 18}, ${tx + dx * 0.8} ${top + dy * 0.5 - 8}, ${tx + dx} ${top + dy + droop}
      C ${tx + dx * 0.75} ${top + dy * 0.45 + 2}, ${tx + dx * 0.35} ${top + dy * 0.15 - 6}, ${tx} ${top} Z`
   return (
-    <g fill="#03060c" stroke="#03060c">
+    <g fill={color} stroke={color}>
       <path d={`M${x} 300 C ${x + lean * 0.2} ${300 - height * 0.45}, ${x + lean * 0.7} ${300 - height * 0.8}, ${tx} ${top}`} fill="none" strokeWidth="7" strokeLinecap="round" />
       <path d={frond(78, 20, 26)} />
       <path d={frond(-74, 18, 30)} />
@@ -167,6 +167,59 @@ export function BayNight() {
         <ellipse cx="70" cy="306" rx="140" ry="20" fill="#03060c" />
         <Palm x={56} height={235} lean={18} />
         <Palm x={138} height={170} lean={-20} />
+      </svg>
+    </div>
+  )
+}
+
+/** Light-mode Preferences backdrop: the same bay on a bright, breezy Miami day. */
+export function BayDay() {
+  const palm = '#1f4d47'
+  return (
+    <div
+      aria-hidden
+      className="pointer-events-none fixed inset-0 overflow-hidden bg-[linear-gradient(180deg,#9fd3f5_0%,#c9e8fb_45%,#eaf6fd_75%,#fdf3e1_100%)]"
+    >
+      {/* Sun with a warm glow */}
+      <div className="absolute right-[13%] top-[8%] size-[84px] rounded-full bg-[radial-gradient(circle,#fffdf3_0%,#fff3c4_55%,#ffe39a_100%)] shadow-[0_0_60px_24px_rgb(255_236_170/0.55)]" />
+
+      {/* Soft clouds drifting slowly */}
+      {[
+        { top: '12%', left: '8%', w: 220, delay: '0s' },
+        { top: '22%', left: '48%', w: 170, delay: '-6s' },
+        { top: '7%', left: '62%', w: 130, delay: '-11s' },
+      ].map((c, i) => (
+        <div key={i} className="absolute motion-safe:animate-drift" style={{ top: c.top, left: c.left, animationDelay: c.delay }}>
+          <div className="relative" style={{ width: c.w, height: c.w * 0.32 }}>
+            <span className="absolute bottom-0 left-0 h-[55%] w-full rounded-full bg-white/80 blur-[2px]" />
+            <span className="absolute bottom-[25%] left-[18%] h-[70%] w-[42%] rounded-full bg-white/85 blur-[2px]" />
+            <span className="absolute bottom-[20%] left-[45%] h-[85%] w-[38%] rounded-full bg-white/90 blur-[2px]" />
+          </div>
+        </div>
+      ))}
+
+      {/* Water with light sparkling on it */}
+      <div className="absolute inset-x-0 bottom-0 h-[16vh] border-t border-white/60 bg-[linear-gradient(180deg,#5fb6e0,#2f86bd)]" />
+      <div className="absolute inset-x-0 bottom-0 h-[16vh]">
+        {[8, 19, 27, 41, 56, 63, 72, 84, 91].map((left, i) => (
+          <span
+            key={i}
+            className="absolute h-[2px] rounded-full bg-white motion-safe:animate-twinkle"
+            style={{ left: `${left}%`, top: `${18 + ((i * 37) % 60)}%`, width: 14 + (i % 3) * 10, opacity: 0.5, animationDuration: `${2 + (i % 4)}s`, animationDelay: `${-i * 0.7}s`, '--dim': 0.1 } as CSSProperties}
+          />
+        ))}
+      </div>
+
+      {/* Palm trees on the shore at both edges */}
+      <svg className="absolute bottom-[12vh] left-0 h-[36vh] w-auto" viewBox="0 0 260 300" preserveAspectRatio="xMinYMax meet">
+        <ellipse cx="70" cy="306" rx="150" ry="22" fill="#e9d9b3" />
+        <Palm x={48} height={250} lean={22} color={palm} />
+        <Palm x={120} height={190} lean={-14} color={palm} />
+      </svg>
+      <svg className="absolute bottom-[12vh] right-0 h-[30vh] w-auto -scale-x-100" viewBox="0 0 260 300" preserveAspectRatio="xMinYMax meet">
+        <ellipse cx="70" cy="306" rx="140" ry="20" fill="#e9d9b3" />
+        <Palm x={56} height={235} lean={18} color={palm} />
+        <Palm x={138} height={170} lean={-20} color={palm} />
       </svg>
     </div>
   )

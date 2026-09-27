@@ -4,7 +4,8 @@ import { useState } from 'react'
 // Which base map is shown and which Google overlays are drawn on top.
 // Saved in this browser so the choice survives a reload.
 
-export type MapStyle = 'dark' | 'light' | 'satellite' | 'hybrid' | 'terrain'
+// (No "terrain": Google's terrain only adds hill shading, and Miami is flat, so it looked the same as Light.)
+export type MapStyle = 'dark' | 'light' | 'satellite' | 'hybrid'
 
 export type MapLayers = {
   style: MapStyle
@@ -23,7 +24,6 @@ export const MAP_STYLES: Record<MapStyle, { label: string; mapTypeId: string; co
   light: { label: 'Light', mapTypeId: 'roadmap', colorScheme: ColorScheme.LIGHT },
   satellite: { label: 'Satellite', mapTypeId: 'satellite', colorScheme: ColorScheme.DARK },
   hybrid: { label: 'Hybrid', mapTypeId: 'hybrid', colorScheme: ColorScheme.DARK },
-  terrain: { label: 'Terrain', mapTypeId: 'terrain', colorScheme: ColorScheme.LIGHT },
 }
 
 const STORAGE_KEY = 'doorstep.mapLayers'

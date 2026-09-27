@@ -9,18 +9,20 @@ import { EditPanel } from './components/EditPanel'
 import { LayerControl } from './components/LayerControl'
 import { MapCanvas, type Tool } from './components/MapCanvas'
 import { NavBanner, NavPanel } from './components/NavPanel'
+import { LocateIcon } from './components/icons'
 import { PreferencesPage } from './components/PreferencesPage'
 import { TabBar, type Tab } from './components/TabBar'
 import { Button, LogoMark, Notice, Sheet } from './components/ui'
 import { useMapLayers } from './mapLayers'
 import * as api from './api'
-import { type Destination } from './search'
+import { looksLikeSentence, type Destination } from './search'
+import { useSlope, useTimeSaved, useWeather } from './state/insights'
 import { AuthProvider, useAuth } from './state/auth'
 import { CAMPUS_CENTER, CAMPUS_GATE, WALK_DEMO_START } from './data/mapDefaults'
 import { distanceMeters } from './geo'
 import { useCampus, useClosures, useZones } from './state/data'
 import { useNavigation, type NavLeg } from './state/navigation'
-import { useGeolocation, useRoute, useServerPlan, type Geo } from './state/routing'
+import { useCampusGraph, useGeolocation, useRoute, useServerPlan, type Geo } from './state/routing'
 import type { LatLng, TravelMode, TripKind, Zone } from './types'
 import { needsStepFree, walkingSpeed } from './walking'
 
@@ -73,6 +75,10 @@ function Doorstep() {
   const [feedbackSent, setFeedbackSent] = useState(false)
   const [selectedDoorId, setSelectedDoorId] = useState<string>()
   const walking = mode === 'walk'
+  // A plain-English request that Gemini turned into these settings, and the door it asked for.
+  const [aiTrip, setAiTrip] = useState<{ parse: api.TripParse; building?: string; door?: string }>()
+  const [aiBusy, setAiBusy] = useState(false)
+  const preferredDoorId = aiTrip?.parse.entranceId ?? undefined
 
   // Zone editing
   const [editingZoneId, setEditingZoneId] = useState<string>()
@@ -86,14 +92,26 @@ function Doorstep() {
   const planning = useServerPlan(destination ? { buildingId: destination.building.id, room: destination.room,
     kind: mode, stepFree, origin: walking ? { lat: +walkStart.location.lat.toFixed(4), lng: +walkStart.location.lng.toFixed(4) } : undefined } : undefined,
     token, JSON.stringify([user?.profile, zoneStore.personal, closureStore.closures]))
-  const options = (planning.data?.options ?? []).flatMap(o => o.zone ? [{ ...o, zone: o.zone }] : [])
-  const doors = walking ? planning.data?.options ?? [] : []
-  const activeZoneId = panel === 'edit' ? editingZoneId : options.some(o => o.zone.id === selectedZoneId) ? selectedZoneId : options[0]?.zone.id
+  // Rain or heat: rank purely by the shortest walk outside.
+  const weather = useWeather(CAMPUS_CENTER)
+  const byWeather = <T extends { walkSeconds: number }>(list: T[]) =>
+    weather && weather.kind !== 'clear' ? [...list].sort((a, b) => a.walkSeconds - b.walkSeconds) : list
+  const options = byWeather((planning.data?.options ?? []).flatMap(o => o.zone ? [{ ...o, zone: o.zone }] : []))
+  const doors = walking ? byWeather(planning.data?.options ?? []) : []
+  // Default selection: the door Gemini heard you ask for, otherwise the best option.
+  const preferredZoneId = options.find(o => o.entrance.id === preferredDoorId)?.zone.id
+  const activeZoneId = panel === 'edit' ? editingZoneId : options.some(o => o.zone.id === selectedZoneId) ? selectedZoneId : preferredZoneId ?? options[0]?.zone.id
   const activeOption = panel === 'dropoff' && !walking ? options.find(o => o.zone.id === activeZoneId) : undefined
-  const activeDoor = panel === 'dropoff' && walking ? doors.find(d => d.entrance.id === selectedDoorId) ?? doors[0] : undefined
+  const activeDoor = panel === 'dropoff' && walking
+    ? doors.find(d => d.entrance.id === selectedDoorId) ?? doors.find(d => d.entrance.id === preferredDoorId) ?? doors[0] : undefined
   const driveResult = useRoute('DRIVING', activeOption ? geo.position ?? CAMPUS_GATE : undefined, activeOption?.zone.stopPoint)
   const drive = driveResult.info
   const walk = (activeDoor ?? activeOption)?.route
+  // Where ride apps stop today: the end of Google's driving route to the building's address pin.
+  const pinDrive = useRoute('DRIVING', destination && !walking && panel === 'dropoff' ? CAMPUS_GATE : undefined, destination?.building.location)
+  const graph = useCampusGraph()
+  const saved = useTimeSaved(graph, pinDrive.info?.path.at(-1), options, stepFree, walkingSpeed(user?.profile))
+  const slope = useSlope(walk?.path, stepFree && panel === 'dropoff')
   const searchRequest = useRef<AbortController | undefined>(undefined)
   useEffect(() => () => searchRequest.current?.abort(), [])
 
@@ -189,6 +207,8 @@ function Doorstep() {
     setConfirmedZoneId(undefined)
     setConfirmedTripId(undefined)
     setFeedbackSent(false)
+    setAiTrip(undefined)
+    setAiBusy(false)
   }
 
   const requireUser = (then: () => void) => {
@@ -220,9 +240,15 @@ function Doorstep() {
       setSelectedZoneId(spot.id)
       return
     }
+    if (looksLikeSentence(text)) await askGemini(text, controller)
+    else await plainSearch(text, controller)
+  }
+
+  /** Building + room, address or place name. Resolves to whether something was found. */
+  const plainSearch = async (text: string, controller: AbortController) => {
     try {
       const result = await api.search(text, controller.signal)
-      if (controller.signal.aborted) return
+      if (controller.signal.aborted) return false
       clearSelection()
       if (result.building) setDestination({ building: result.building, room: result.room })
       else if (result.destination) setArrivalDestination(result.destination)
@@ -230,11 +256,42 @@ function Doorstep() {
       setSelectedZoneId(undefined)
       setSelectedDoorId(undefined)
       setConfirmedZoneId(undefined)
+      return true
     } catch (e) {
-      if (controller.signal.aborted) return
+      if (controller.signal.aborted) return false
       clearSelection()
       setSearchError((e as Error).message)
+      return false
     }
+  }
+
+  /** "Side door of GC by the food court at 9, I'm on crutches" → building, door, time, mode, step-free. */
+  const askGemini = async (text: string, controller: AbortController) => {
+    setAiBusy(true)
+    let parse: api.TripParse
+    try {
+      parse = await api.parseTrip(text, controller.signal)
+    } catch (e) {
+      if (controller.signal.aborted) return
+      setAiBusy(false)
+      if (!(await plainSearch(text, controller)) && !controller.signal.aborted) {
+        setSearchError(`Gemini couldn't read that (${(e as Error).message}). Try a building and room, like "GC 150".`)
+      }
+      return
+    }
+    if (controller.signal.aborted) return
+    const building = campus.buildings.find((b) => b.id === parse.buildingId)
+    if (building) {
+      clearSelection()
+      setDestination({ building, room: parse.room })
+    } else if (!(await plainSearch(parse.placeQuery || text, controller))) {
+      setAiBusy(false)
+      return
+    }
+    if (parse.mode) setMode(parse.mode)
+    if (parse.stepFree) setStepFreeChoice(true)
+    setAiTrip({ parse, building: building?.name, door: building?.entrances.find((d) => d.id === parse.entranceId)?.label })
+    setExpanded(true)
   }
 
   const handleMapClick = (point: LatLng, placeId?: string) => {
@@ -324,7 +381,8 @@ function Doorstep() {
       {trip && leg && <NavBanner nav={nav} leg={leg} />}
 
       {/* While navigating on a phone, the instruction banner takes the top of the screen. */}
-      <div className={`absolute right-4 top-[max(16px,env(safe-area-inset-top))] z-30 flex flex-col items-end gap-2 ${trip ? 'max-[899px]:hidden' : ''}`}>
+      {/* Right of this cluster is the Preferences/Map switch (TabBar), pinned to the corner. */}
+      <div className={`absolute right-[112px] top-[max(16px,env(safe-area-inset-top))] z-30 flex flex-col items-end gap-2 ${trip ? 'max-[899px]:hidden' : ''}`}>
         <div className="flex items-center gap-2">
           {!trip && <Legend />}
           <LayerControl value={layers} onChange={setLayers} />
@@ -351,7 +409,7 @@ function Doorstep() {
       <Sheet expanded={expanded} onToggle={() => setExpanded((v) => !v)}>
         <div className="flex items-center gap-2.5">
           <LogoMark className="size-6" />
-          <span className="text-lg font-extrabold tracking-tight">Doorstep</span>
+          <span className="text-lg font-extrabold tracking-tight">DoorStep</span>
           <span className="ml-auto text-xs text-muted">the right door, every time</span>
         </div>
 
@@ -404,6 +462,11 @@ function Doorstep() {
             feedbackSent={feedbackSent}
             drive={drive && { seconds: drive.seconds, fromGps: !!geo.position }}
             planning={planning.loading}
+            saved={saved}
+            weather={weather}
+            slope={slope}
+            ai={aiTrip}
+            aiBusy={aiBusy}
             onSearch={search}
             onClear={clearSelection}
             onSignIn={() => setTab('preferences')}
@@ -472,10 +535,16 @@ function Doorstep() {
       </Sheet>
         </main>
 
-        {tab === 'preferences' && <PreferencesPage onOpenMap={() => setTab('map')} />}
+        <PreferencesPage open={tab === 'preferences'} light={layers.style === 'light'} onOpenMap={() => setTab('map')} />
       </div>
 
-      <TabBar tab={tab} onTab={setTab} />
+      {/* No tab bar on the sign-in screen: "Continue as a guest" leads to the map instead. */}
+      {!(tab === 'preferences' && !user) && (
+        // Light Preferences page → light switch. Hidden on phones mid-trip (the turn banner is up there).
+        <div className={`${tab === 'preferences' && layers.style === 'light' && user ? 'theme-light' : ''} ${trip ? 'max-[899px]:hidden' : ''}`}>
+          <TabBar tab={tab} onTab={setTab} />
+        </div>
+      )}
     </div>
   )
 }
@@ -498,9 +567,7 @@ function LocateButton({ geo }: { geo: Geo }) {
       }}
       className="grid size-11 place-items-center rounded-full border border-line bg-surface text-lg shadow-[var(--shadow-float)] hover:border-accent disabled:opacity-50"
     >
-      <span aria-hidden className={geo.position ? 'text-[#4c8dff]' : 'text-muted'}>
-        ◎
-      </span>
+      <LocateIcon size={20} className={geo.position ? 'text-[#4c8dff]' : 'text-muted'} />
     </button>
   )
 }

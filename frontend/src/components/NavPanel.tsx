@@ -3,6 +3,7 @@ import { formatDistance } from '../geo'
 import type { Navigation, NavLeg } from '../state/navigation'
 import type { LatLng } from '../types'
 import { cx } from './cx'
+import { CarIcon, DoorIcon, LocateIcon, PlayIcon, SpeakerIcon, WalkIcon } from './icons'
 import { StreetViewPreview } from './StreetViewPreview'
 import { Button, Switch } from './ui'
 
@@ -95,8 +96,8 @@ export function NavPanel(p: PanelProps) {
     return (
       <div className="flex flex-col gap-4">
         <div className="flex items-center gap-3">
-          <span aria-hidden className="grid size-12 place-items-center rounded-2xl bg-accent/15 text-2xl">
-            ✓
+          <span aria-hidden className="grid size-12 place-items-center rounded-2xl bg-accent/15 text-accent">
+            <DoorIcon size={24} />
           </span>
           <div>
             <p className="m-0 text-xs font-bold text-accent">You've arrived</p>
@@ -135,7 +136,8 @@ export function NavPanel(p: PanelProps) {
                 i === p.legIndex ? 'border-accent/50 bg-accent/10 text-accent' : i < p.legIndex ? 'border-line text-muted line-through' : 'border-line text-muted',
               )}
             >
-              {l.travel === 'DRIVING' ? '🚗' : '🚶'} {l.stage}
+              {l.travel === 'DRIVING' ? <CarIcon size={15} className="mr-1 inline -translate-y-px" /> : <WalkIcon size={15} className="mr-1 inline -translate-y-px" />}
+              {l.stage}
             </li>
           ))}
         </ol>
@@ -184,12 +186,28 @@ export function NavPanel(p: PanelProps) {
       )}
 
       <div className="flex flex-wrap items-center justify-between gap-x-4">
-        <Switch checked={p.voice} onChange={p.onVoice} label="🔊 Voice" />
-        <Switch checked={p.simulate} onChange={p.onSimulate} label="▶ Simulate trip" />
+        <Switch
+          checked={p.voice}
+          onChange={p.onVoice}
+          label={
+            <span className="flex items-center gap-1.5">
+              <SpeakerIcon size={18} className="text-accent" /> Voice
+            </span>
+          }
+        />
+        <Switch
+          checked={p.simulate}
+          onChange={p.onSimulate}
+          label={
+            <span className="flex items-center gap-1.5">
+              <PlayIcon size={16} className="text-accent" /> Simulate trip
+            </span>
+          }
+        />
       </div>
       {!p.following && (
         <Button className="h-10 text-sm" onClick={p.onRecenter}>
-          ◎ Recenter
+          <LocateIcon size={18} /> Recenter
         </Button>
       )}
     </div>

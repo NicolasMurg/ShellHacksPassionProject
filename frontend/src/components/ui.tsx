@@ -1,7 +1,7 @@
 import { useId, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import { cx } from './cx'
 
-/** Doorstep logo: a map pin with a door in it, in the Waymo teal → blue gradient. */
+/** DoorStep logo: a map pin with a door in it, in the Waymo teal → blue gradient. */
 export function LogoMark({ className = 'size-6' }: { className?: string }) {
   const id = useId()
   return (
@@ -20,7 +20,7 @@ export function LogoMark({ className = 'size-6' }: { className?: string }) {
 }
 
 
-type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'ghost' | 'danger' | 'quiet' }
+type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'ghost' | 'solid' | 'danger' | 'quiet' }
 
 export function Button({ variant = 'ghost', className, ...rest }: ButtonProps) {
   return (
@@ -28,8 +28,9 @@ export function Button({ variant = 'ghost', className, ...rest }: ButtonProps) {
       type="button"
       className={cx(
         'inline-flex h-11 items-center justify-center gap-2 rounded-full px-5 font-bold transition-[filter,border-color,transform] active:scale-[0.98] disabled:opacity-40 disabled:active:scale-100',
-        variant === 'primary' && 'bg-button text-accent-ink shadow-[var(--shadow-glow)] hover:brightness-110',
+        variant === 'primary' && 'bg-accent text-accent-ink hover:bg-[#5ef0e3]',
         variant === 'ghost' && 'border border-line bg-raised text-fg hover:border-accent/60',
+        variant === 'solid' && 'border border-line bg-surface text-fg shadow-[var(--shadow-float)] hover:border-accent/60 hover:text-accent',
         variant === 'danger' && 'border border-closed/40 bg-closed/10 text-closed hover:bg-closed/20',
         variant === 'quiet' && 'text-muted hover:text-fg',
         className,
@@ -147,9 +148,9 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
 export function Sheet({ expanded, onToggle, children }: { expanded: boolean; onToggle: () => void; children: ReactNode }) {
   return (
     <section
-      aria-label="Doorstep panel"
+      aria-label="DoorStep panel"
       className={cx(
-        'absolute inset-x-3 bottom-[calc(84px+env(safe-area-inset-bottom))] z-20 flex flex-col rounded-[var(--radius-sheet)] border border-line bg-surface shadow-[var(--shadow-float)] transition-[max-height] duration-300',
+        'absolute inset-x-3 bottom-[max(12px,env(safe-area-inset-bottom))] z-20 flex flex-col rounded-[var(--radius-sheet)] border border-line bg-surface shadow-[var(--shadow-float)] transition-[max-height] duration-300',
         expanded ? 'max-h-[64vh]' : 'max-h-[26vh]',
         'min-[900px]:inset-y-4 min-[900px]:left-4 min-[900px]:right-auto min-[900px]:max-h-none min-[900px]:w-[420px]',
       )}

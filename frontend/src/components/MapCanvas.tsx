@@ -3,6 +3,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { CAMPUS_CENTER } from '../data/mapDefaults'
 import { centroid, distanceMeters, splitPath } from '../geo'
 import { MAP_STYLES, type MapLayers } from '../mapLayers'
+import { CarIcon, DoorIcon, WheelchairIcon } from './icons'
 import type { Building, Entrance, LatLng, RoadClosure, Zone } from '../types'
 
 // Keep in sync with the @theme colors in index.css (the map needs raw hex).
@@ -155,7 +156,7 @@ export function MapCanvas(props: Props) {
       {props.arrivalStop && !editMode && !navigating && <AdvancedMarker position={props.arrivalStop} zIndex={50}
         draggable={props.movingArrival} title={props.movingArrival ? 'Drag to move the stop' : 'Suggested stopping point'}
         onDragEnd={e => { const p = e.latLng?.toJSON(); if (p) props.onMoveArrival(p) }}>
-        <div className="pin-stop" style={{ borderColor: COLOR.selected, background: COLOR.selected }}>🚗</div>
+        <div className="pin-stop" style={{ borderColor: COLOR.selected, background: COLOR.selected, color: '#04201e' }}><CarIcon size={20} /></div>
       </AdvancedMarker>}
 
       {/* Car route: you → curb */}
@@ -201,7 +202,7 @@ export function MapCanvas(props: Props) {
         return (
           <AdvancedMarker key={e.id} position={e.location} zIndex={chosen ? 35 : 15} title={e.label}>
             <div className="pin-door" style={{ borderColor: chosen ? COLOR.selected : undefined, opacity: chosen ? 1 : 0.8 }}>
-              {e.accessible ? '♿' : '🚪'}
+              {e.accessible ? <WheelchairIcon size={17} /> : <DoorIcon size={17} />}
             </div>
           </AdvancedMarker>
         )
@@ -354,7 +355,7 @@ function ZoneShape({
           title={editing ? 'Drag to move where the car stops' : zone.name}
         >
           <div className="pin-stop" style={{ borderColor: color, background: selected ? color : undefined }}>
-            🚗
+            <CarIcon size={20} />
           </div>
         </AdvancedMarker>
       )}
@@ -370,7 +371,7 @@ function ClosureLine({ path, label }: { path: LatLng[]; label: string }) {
       {mid && (
         <AdvancedMarker position={mid} zIndex={45} title={`Closed: ${label}`}>
           <div className="grid size-7 place-items-center rounded-full bg-closed text-sm font-black text-white shadow-[var(--shadow-float)]">
-            ⛔
+            <span className="block h-[3px] w-3 rounded-full bg-white" />
           </div>
         </AdvancedMarker>
       )}
