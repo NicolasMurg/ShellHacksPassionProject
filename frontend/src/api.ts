@@ -1,155 +1,61 @@
-import { BUILDINGS, DESIGN_ZONES } from './data/campus'
-import type { Building, LatLng, RoadClosure, User, WalkingProfile, Zone } from './types'
+import type { ApiBuilding, ApiClosure, ApiPlan, ApiRoute, ApiUser, ApiZone } from '../../backend/src/contracts'
+import type { LatLng, User, WalkingProfile, Zone } from './types'
+import { fromBuilding, fromClosure, fromEntrance, fromRoute, fromUser, fromZone, toPoint, toZone } from './api/adapters'
 
-// Talks to the Express backend. Until it's ready (VITE_USE_MOCK !== 'false'),
-// everything is stored in this browser's localStorage so the UI is fully usable.
-
-export const USE_MOCK = import.meta.env.VITE_USE_MOCK !== 'false'
-
-type Session = { user: User; token: string }
-
-// ---------------------------------------------------------------------------
-// Real backend
-// ---------------------------------------------------------------------------
-
-async function http<T>(method: string, path: string, token?: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
-    method,
-    headers: {
-      ...(body !== undefined && { 'Content-Type': 'application/json' }),
-      ...(token && { Authorization: `Bearer ${token}` }),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
-  if (!res.ok) {
-    const text = await res.text()
+export async function http<T>(method: string, path: string, token?: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(path, { method, signal,
+    headers: { ...(body !== undefined && { 'Content-Type': 'application/json' }), ...(token && { Authorization: `Bearer ${token}` }) },
+    body: body === undefined ? undefined : JSON.stringify(body) })
+  if (!response.ok) {
+    const text = await response.text()
     let message = text
-    try {
-      message = (JSON.parse(text) as { error?: string }).error ?? text
-    } catch {
-      // not JSON; use the raw text
-    }
-    throw new Error(message || `Request failed (${res.status})`)
+    try { message = (JSON.parse(text) as { error?: string }).error ?? text } catch { /* Preserve non-JSON server errors. */ }
+    throw new Error(message || `Request failed (${response.status})`)
   }
-  return res.status === 204 ? (undefined as T) : ((await res.json()) as T)
+  return response.status === 204 ? undefined as T : await response.json() as T
 }
-
-// ---------------------------------------------------------------------------
-// Mock backend (localStorage)
-// ---------------------------------------------------------------------------
-
-function load<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(`doorstep.${key}`)
-    return raw ? (JSON.parse(raw) as T) : fallback
-  } catch {
-    return fallback
-  }
+export async function login(email: string, password: string, name?: string) {
+  const session = await http<{ user: ApiUser; token: string }>('POST', name === undefined ? '/api/auth/login' : '/api/auth/register', undefined,
+    name === undefined ? { email, password } : { name, email, password })
+  return { ...session, user: fromUser(session.user) }
 }
-
-function save(key: string, value: unknown) {
-  try {
-    localStorage.setItem(`doorstep.${key}`, JSON.stringify(value))
-  } catch {
-    // Storage full or blocked: the change just won't survive a reload.
-  }
-}
-
-const newId = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 10)}`
-const delay = () => new Promise((r) => setTimeout(r, 150))
-
-const DEFAULT_PROFILE: WalkingProfile = { mobility: 'none', learnedFactor: 1 }
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-export async function login(name: string, email: string): Promise<Session> {
-  if (!USE_MOCK) return http('POST', '/api/auth/login', undefined, { name, email })
-  await delay()
-  const users = load<Record<string, User>>('users', {})
-  const key = email.trim().toLowerCase()
-  const user = users[key] ?? { id: newId('user'), name: name.trim(), email: key, profile: DEFAULT_PROFILE }
-  users[key] = user
-  save('users', users)
-  return { user, token: user.id }
-}
-
-export async function getMe(token: string): Promise<User> {
-  if (!USE_MOCK) return http('GET', '/api/me', token)
-  const user = Object.values(load<Record<string, User>>('users', {})).find((u) => u.id === token)
-  if (!user) throw new Error('Session expired')
-  return user
-}
-
+export const logout = (token: string) => http<void>('POST', '/api/auth/logout', token)
+export const getMe = async (token: string) => fromUser(await http<ApiUser>('GET', '/api/me', token))
 export async function updateProfile(token: string, profile: WalkingProfile): Promise<User> {
-  if (!USE_MOCK) return http('PUT', '/api/me/profile', token, profile)
-  const users = load<Record<string, User>>('users', {})
-  const entry = Object.entries(users).find(([, u]) => u.id === token)
-  if (!entry) throw new Error('Session expired')
-  const user = { ...entry[1], profile }
-  users[entry[0]] = user
-  save('users', users)
-  return user
+  const editable = { pace: profile.pace, mobility: profile.mobility, avoidStairs: profile.avoidStairs,
+    requireCurbCuts: profile.requireCurbCuts, avoidSteepSlopes: profile.avoidSteepSlopes,
+    maxWalkMinutes: profile.maxWalkMinutes, preferAccessibleEntrances: profile.preferAccessibleEntrances }
+  return fromUser(await http<ApiUser>('PATCH', '/api/me', token, { profile: {
+    ...editable, age: profile.age ?? null, heightCm: profile.heightCm ?? null,
+  } }))
 }
-
-export async function getBuildings(): Promise<Building[]> {
-  if (!USE_MOCK) return http('GET', '/api/buildings')
-  return BUILDINGS
+export const getBuildings = async () => (await http<ApiBuilding[]>('GET', '/api/buildings')).map(fromBuilding)
+export const getDefaultZones = async () => (await http<ApiZone[]>('GET', '/api/zones')).map(fromZone)
+export const getMyZones = async (token: string) => (await http<ApiZone[]>('GET', '/api/me/zones', token)).map(fromZone)
+export const saveMyZone = async (token: string, zone: Zone) => fromZone(await http<ApiZone>('PUT', `/api/me/zones/${encodeURIComponent(zone.id)}`, token, toZone(zone)))
+export const deleteMyZone = (token: string, id: string) => http<void>('DELETE', `/api/me/zones/${encodeURIComponent(id)}`, token)
+export async function getClosures() {
+  const now = Date.now()
+  return (await http<ApiClosure[]>('GET', '/api/closures'))
+    .filter(c => (!c.startsAt || Date.parse(c.startsAt) <= now) && (!c.endsAt || Date.parse(c.endsAt) > now)).map(fromClosure)
 }
-
-/** Shared zones: generated curbs + design-team zones. In mock mode only design zones; curbs.ts generates the rest. */
-export async function getDefaultZones(): Promise<Zone[]> {
-  if (!USE_MOCK) return http('GET', '/api/zones')
-  return DESIGN_ZONES
+export const reportClosure = async (token: string, path: LatLng[], reason: string) => fromClosure(await http<ApiClosure>('POST', '/api/closures', token,
+  { type: 'ROAD_CLOSED', geometryType: 'PATH', points: path.map(toPoint), reason }))
+export const removeClosure = (token: string, id: string) => http<void>('DELETE', `/api/closures/${encodeURIComponent(id)}`, token)
+export async function search(text: string, signal?: AbortSignal) {
+  const result = await http<{ building: ApiBuilding; room: string }>('GET', `/api/search?q=${encodeURIComponent(text)}`, undefined, undefined, signal)
+  return { building: fromBuilding(result.building), room: result.room }
 }
-
-export async function getMyZones(token: string): Promise<Zone[]> {
-  if (!USE_MOCK) return http('GET', '/api/me/zones', token)
-  return load<Zone[]>(`zones.v2.${token}`, [])
+export type PlanInput = { buildingId: string; room: string; kind: 'dropoff' | 'pickup' | 'walk'; stepFree: boolean; origin?: LatLng }
+export async function plan(input: PlanInput, token?: string, signal?: AbortSignal) {
+  const result = await http<ApiPlan>('POST', '/api/plan', token, { ...input, kind: input.kind.toUpperCase(), origin: input.origin && toPoint(input.origin) }, signal)
+  return { tripId: result.tripId, options: result.options.map(o => ({ ...o, entrance: fromEntrance(o.entrance),
+    zone: o.zone ? fromZone(o.zone) : undefined, route: fromRoute(o.route) })) }
 }
-
-/** Create or update one of the user's personal zones. */
-export async function saveMyZone(token: string, zone: Zone): Promise<Zone> {
-  if (!USE_MOCK) return http('PUT', `/api/me/zones/${zone.id}`, token, zone)
-  const zones = load<Zone[]>(`zones.v2.${token}`, [])
-  const next = zones.some((z) => z.id === zone.id) ? zones.map((z) => (z.id === zone.id ? zone : z)) : [...zones, zone]
-  save(`zones.v2.${token}`, next)
-  return zone
+export const route = async (mode: 'DRIVING' | 'WALKING', from: LatLng, to: LatLng, signal?: AbortSignal) =>
+  fromRoute(await http<ApiRoute>('POST', '/api/route', undefined, { origin: toPoint(from), destination: toPoint(to), travelMode: mode === 'DRIVING' ? 'DRIVE' : 'WALK' }, signal))
+export async function feedback(token: string, tripId: string, paceFeedback: 'faster' | 'right' | 'slower') {
+  const result = await http<{ user: ApiUser }>('POST', '/api/trips/feedback', token, { tripId, rating: paceFeedback === 'right' ? 5 : 3, paceFeedback })
+  return fromUser(result.user)
 }
-
-export async function deleteMyZone(token: string, id: string): Promise<void> {
-  if (!USE_MOCK) return http('DELETE', `/api/me/zones/${id}`, token)
-  save(`zones.v2.${token}`, load<Zone[]>(`zones.v2.${token}`, []).filter((z) => z.id !== id))
-}
-
-export async function getClosures(): Promise<RoadClosure[]> {
-  if (!USE_MOCK) return http('GET', '/api/closures')
-  return load<RoadClosure[]>('closures', [])
-}
-
-export async function reportClosure(
-  token: string,
-  reporter: string,
-  path: LatLng[],
-  reason: string,
-): Promise<RoadClosure> {
-  if (!USE_MOCK) return http('POST', '/api/closures', token, { path, reason })
-  await delay()
-  const closure: RoadClosure = {
-    id: newId('closure'),
-    path,
-    reason,
-    reportedBy: reporter,
-    createdAt: new Date().toISOString(),
-  }
-  save('closures', [...load<RoadClosure[]>('closures', []), closure])
-  return closure
-}
-
-export async function removeClosure(token: string, id: string): Promise<void> {
-  if (!USE_MOCK) return http('DELETE', `/api/closures/${id}`, token)
-  save('closures', load<RoadClosure[]>('closures', []).filter((c) => c.id !== id))
-}
-
-export { newId }
+export const newId = (prefix: string) => `${prefix}-${crypto.randomUUID()}`

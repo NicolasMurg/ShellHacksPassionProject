@@ -1,0 +1,166 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+type GeoPoint {
+  type        String
+  coordinates Float[]
+}
+
+enum ZoneKind {
+  DROPOFF
+  PICKUP
+  BOTH
+}
+
+enum RestrictionType {
+  ROAD_CLOSED
+  SIDEWALK_CLOSED
+  CONSTRUCTION
+  STAIRS
+  NO_CURB_CUT
+  BLOCKED_PATH
+  STEEP_SLOPE
+  FLOODED
+  TEMPORARY_OBSTACLE
+  OTHER
+}
+
+type WalkingProfile {
+  pace                      String  @default("average")
+  age                       Int?
+  heightCm                  Int?
+  mobility                  String  @default("none")
+  learnedFactor             Float   @default(1)
+  avoidStairs               Boolean
+  requireCurbCuts           Boolean
+  avoidSteepSlopes          Boolean
+  maxWalkMinutes            Int?
+  preferAccessibleEntrances Boolean
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String             @id @default(auto()) @map("_id") @db.ObjectId
+  name         String
+  email        String             @unique
+  passwordHash String?
+  sessions     Session[]
+  restrictions RouteRestriction[]
+  trips        Trip[]
+
+  profile WalkingProfile
+  zones   Zone[]
+}
+
+model Building {
+  id       String   @id @map("_id")
+  code     String
+  name     String
+  location GeoPoint
+
+  entrances Entrance[]
+  zones     Zone[]
+}
+
+model Entrance {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  buildingId String
+  building   Building @relation(fields: [buildingId], references: [id])
+
+  label      String
+  location   GeoPoint
+  accessible Boolean
+  hours      String?
+  rooms      String[] @default([])
+
+  zones Zone[]
+}
+
+model Zone {
+  id String @id @map("_id")
+
+  buildingId String
+  building   Building @relation(fields: [buildingId], references: [id])
+
+  entranceId String   @db.ObjectId
+  entrance   Entrance @relation(fields: [entranceId], references: [id])
+
+  name   String
+  kinds  ZoneKind[]
+  source String     @default("design")
+
+  polygon   GeoPoint[]
+  stopPoint GeoPoint
+
+  rooms String[]
+
+  ownerId String? @db.ObjectId
+  owner   User?   @relation(fields: [ownerId], references: [id])
+
+  basedOnZoneId String?
+  hidden        Boolean @default(false)
+
+  @@index([buildingId])
+  @@index([entranceId])
+  @@index([ownerId])
+}
+
+enum RestrictionGeometryType {
+  POINT
+  PATH
+  AREA
+}
+
+model RouteRestriction {
+  id           String                  @id @default(auto()) @map("_id") @db.ObjectId
+  type         RestrictionType
+  geometryType RestrictionGeometryType
+
+  points GeoPoint[]
+
+  reason   String
+  startsAt DateTime?
+  endsAt   DateTime?
+
+  ownerId String? @db.ObjectId
+  owner   User?   @relation(fields: [ownerId], references: [id])
+
+  createdAt DateTime @default(now())
+}
+
+model Session {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  tokenHash String   @unique
+  userId    String   @db.ObjectId
+  user      User     @relation(fields: [userId], references: [id])
+  expiresAt DateTime
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Trip {
+  id        String        @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String        @db.ObjectId
+  user      User          @relation(fields: [userId], references: [id])
+  createdAt DateTime      @default(now())
+  feedback  TripFeedback?
+
+  @@index([userId])
+}
+
+model TripFeedback {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  tripId       String   @unique @db.ObjectId
+  trip         Trip     @relation(fields: [tripId], references: [id])
+  rating       Int
+  paceFeedback String?
+  comment      String?
+  createdAt    DateTime @default(now())
+}

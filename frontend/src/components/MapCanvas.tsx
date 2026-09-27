@@ -1,6 +1,6 @@
 import { AdvancedMarker, AdvancedMarkerAnchorPoint, Circle, CollisionBehavior, Map, Polygon, Polyline, useMap } from '@vis.gl/react-google-maps'
 import { useEffect, useId, useRef, useState } from 'react'
-import { CAMPUS_CENTER } from '../data/campus'
+import { CAMPUS_CENTER } from '../data/mapDefaults'
 import { centroid, distanceMeters, splitPath } from '../geo'
 import { MAP_STYLES, type MapLayers } from '../mapLayers'
 import type { Building, Entrance, LatLng, RoadClosure, Zone } from '../types'

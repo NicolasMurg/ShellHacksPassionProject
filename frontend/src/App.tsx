@@ -1,5 +1,5 @@
 import { APIProvider, useMap } from '@vis.gl/react-google-maps'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AccountMenu } from './components/Account'
 import { ClosurePanel } from './components/ClosurePanel'
 import { DropoffPanel } from './components/DropoffPanel'
@@ -9,19 +9,18 @@ import { MapCanvas, type Tool } from './components/MapCanvas'
 import { NavBanner, NavPanel } from './components/NavPanel'
 import { PreferencesPage } from './components/PreferencesPage'
 import { TabBar, type Tab } from './components/TabBar'
-import { LogoMark, Sheet } from './components/ui'
+import { Button, LogoMark, Notice, Sheet } from './components/ui'
 import { useMapLayers } from './mapLayers'
-import { floorOf, rankDoors, rankStops, type WalkMeters } from './planner'
-import { parseDestination, type Destination } from './search'
+import * as api from './api'
+import { type Destination } from './search'
 import { AuthProvider, useAuth } from './state/auth'
-import { CAMPUS_CENTER, CAMPUS_GATE, WALK_DEMO_START } from './data/campus'
+import { CAMPUS_CENTER, CAMPUS_GATE, WALK_DEMO_START } from './data/mapDefaults'
 import { distanceMeters } from './geo'
 import { useCampus, useClosures, useZones } from './state/data'
 import { useNavigation, type NavLeg } from './state/navigation'
-import { useCampusGraph, useGeolocation, useRoute, type Geo } from './state/routing'
-import { inCampus, routeWalk } from './walkRouter'
-import type { DoorOption, LatLng, TravelMode, TripKind, Zone } from './types'
-import { learn, needsStepFree, walkingSpeed, walkSecondsForPath } from './walking'
+import { useGeolocation, useRoute, useServerPlan, type Geo } from './state/routing'
+import type { LatLng, TravelMode, TripKind, Zone } from './types'
+import { needsStepFree, walkingSpeed } from './walking'
 
 const API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined
 
@@ -47,11 +46,10 @@ export default function App() {
 type Panel = 'dropoff' | 'edit' | 'closure'
 
 function Doorstep() {
-  const { user, token, restoring, saveProfile } = useAuth()
-  const [destination, setDestination] = useState<Destination>()
-  const campus = useCampus(destination?.building.id)
+  const { user, token, restoring, sendFeedback, error: authError } = useAuth()
+  const campus = useCampus()
   const zoneStore = useZones(campus.defaults, campus.buildings, user, token)
-  const closureStore = useClosures(token, user?.name)
+  const closureStore = useClosures(token)
 
   const [panel, setPanel] = useState<Panel>('dropoff')
   const [tool, setTool] = useState<Tool>('none')
@@ -62,14 +60,16 @@ function Doorstep() {
   const [tab, setTab] = useState<Tab>(() => (user || restoring ? 'map' : 'preferences'))
 
   // Drop-off planning
+  const [destination, setDestination] = useState<Destination>()
   const [searchError, setSearchError] = useState<string>()
   const [mode, setMode] = useState<TravelMode>('dropoff')
   const [stepFreeChoice, setStepFreeChoice] = useState<boolean>()
   const [selectedZoneId, setSelectedZoneId] = useState<string>()
   const [confirmedZoneId, setConfirmedZoneId] = useState<string>()
+  const [confirmedTripId, setConfirmedTripId] = useState<string>()
+  const [feedbackSent, setFeedbackSent] = useState(false)
   const [selectedDoorId, setSelectedDoorId] = useState<string>()
   const walking = mode === 'walk'
-  const kind: TripKind = mode === 'pickup' ? 'pickup' : 'dropoff'
 
   // Zone editing
   const [editingZoneId, setEditingZoneId] = useState<string>()
@@ -77,72 +77,25 @@ function Doorstep() {
   const stepFree = stepFreeChoice ?? needsStepFree(user?.profile)
   const { zones } = zoneStore
 
-  // Real walking distances over campus footpaths, so "closest door" means the shortest walk.
-  const campusGraph = useCampusGraph()
-  const walkMeters = useMemo<WalkMeters | undefined>(
-    () =>
-      campusGraph
-        ? (a, b) => (inCampus(campusGraph, a) && inCampus(campusGraph, b) ? routeWalk(campusGraph, a, b, { stepFree })?.meters : undefined)
-        : undefined,
-    [campusGraph, stepFree],
-  )
-
-  const options = useMemo(
-    () =>
-      destination && !walking
-        ? rankStops({
-            zones,
-            entrances: campus.entrances,
-            buildingId: destination.building.id,
-            room: destination.room,
-            kind,
-            stepFree,
-            profile: user?.profile,
-            closures: closureStore.closures,
-            walkMeters,
-          })
-        : [],
-    [destination, walking, zones, campus.entrances, kind, stepFree, user?.profile, closureStore.closures, walkMeters],
-  )
-
-  const activeZoneId =
-    panel === 'edit'
-      ? editingZoneId
-      : options.some((o) => o.zone.id === selectedZoneId)
-        ? selectedZoneId
-        : options[0]?.zone.id
-  const activeOption = panel === 'dropoff' ? options.find((o) => o.zone.id === activeZoneId) : undefined
-
   const geo = useGeolocation()
-
-  // Walk mode starts from your GPS when you're on campus, otherwise from a demo spot.
   const onCampus = geo.position && distanceMeters(geo.position, CAMPUS_CENTER) < 3000
   const walkStart = onCampus && geo.position ? { location: geo.position, fromGps: true, label: 'your location' } : { ...WALK_DEMO_START, fromGps: false }
+  const planning = useServerPlan(destination ? { buildingId: destination.building.id, room: destination.room,
+    kind: mode, stepFree, origin: walking ? { lat: +walkStart.location.lat.toFixed(4), lng: +walkStart.location.lng.toFixed(4) } : undefined } : undefined,
+    token, JSON.stringify([user?.profile, zoneStore.personal, closureStore.closures]))
+  const options = (planning.data?.options ?? []).flatMap(o => o.zone ? [{ ...o, zone: o.zone }] : [])
+  const doors = walking ? planning.data?.options ?? [] : []
+  const activeZoneId = panel === 'edit' ? editingZoneId : options.some(o => o.zone.id === selectedZoneId) ? selectedZoneId : options[0]?.zone.id
+  const activeOption = panel === 'dropoff' && !walking ? options.find(o => o.zone.id === activeZoneId) : undefined
+  const activeDoor = panel === 'dropoff' && walking ? doors.find(d => d.entrance.id === selectedDoorId) ?? doors[0] : undefined
+  const driveResult = useRoute('DRIVING', activeOption ? geo.position ?? CAMPUS_GATE : undefined, activeOption?.zone.stopPoint)
+  const drive = driveResult.info
+  const walk = (activeDoor ?? activeOption)?.route
+  const searchRequest = useRef<AbortController | undefined>(undefined)
+  useEffect(() => () => searchRequest.current?.abort(), [])
 
-  const doors =
-    destination && walking
-      ? rankDoors({ entrances: destination.building.entrances, room: destination.room, origin: walkStart.location, stepFree, profile: user?.profile, walkMeters })
-      : []
-  const activeDoor =
-    panel === 'dropoff' && walking ? (doors.find((d) => d.entrance.id === selectedDoorId) ?? doors[0]) : undefined
-
-  // Routes. Car: from you (or the campus gate without GPS) to the curb, then walk curb → door.
-  // Walk mode: walk from you straight to the door.
-  const driveFrom = geo.position ?? CAMPUS_GATE
-  const drive = useRoute('DRIVING', activeOption && driveFrom, activeOption?.zone.stopPoint)
-  const walkFrom = activeDoor ? walkStart.location : activeOption?.zone.stopPoint
-  const walkTo = (activeDoor ?? activeOption)?.entrance.location
-  const walk = useRoute('WALKING', walkFrom, walkTo, { stepFree })
-
-  // Once Google has the real walking path, re-estimate the selected option with its true length.
-  const refine = <T extends DoorOption>(o: T): T =>
-    walk
-      ? { ...o, walkSeconds: walkSecondsForPath(walk.meters, user?.profile, { floors: floorOf(destination?.room ?? ''), stairs: !o.entrance.accessible }) }
-      : o
-  const shownOptions = options.map((o) => (o === activeOption ? refine(o) : o))
-  const shownDoors = doors.map((d) => (d === activeDoor ? refine(d) : d))
-
-  // In-app navigation. A trip is one or more legs (ride to the curb, then walk to the door).
+  // In-app navigation. A trip is one or more legs (walk to pickup, ride to the curb, walk to the door).
+  const kind: TripKind = mode === 'pickup' ? 'pickup' : 'dropoff'
   const [trip, setTrip] = useState<{ legs: NavLeg[]; index: number; destinationLabel: string; door?: LatLng }>()
   const [simulateChoice, setSimulateChoice] = useState<boolean>()
   const [voice, setVoice] = useState(false)
@@ -159,20 +112,21 @@ function Doorstep() {
     setExpanded(true)
   }
   const startWalk = (entranceId: string) => {
-    const door = destination?.building.entrances.find((e) => e.id === entranceId)
+    const door = doors.find((d) => d.entrance.id === entranceId)?.entrance
     if (!door) return
     startTrip([{ travel: 'WALKING', from: walkStart.location, to: door.location, toLabel: door.label, stage: 'Walk to door' }], door.label, door.location)
   }
 
-  // Where the car picks you up for a drop-off trip: one of your own pickup spots
-  // near you, otherwise the nearest curb a car can reach (from Google's route start).
+  // Where the car picks you up: one of your own pickup spots near you, otherwise
+  // the start of the server's driving route (the nearest drivable point to you).
   const PICKUP_SEARCH_M = 300
-  const myPickupSpot = geo.position
+  const here = geo.position
+  const myPickupSpot = here
     ? zoneStore.personal
-        .filter((z) => !z.hidden && z.kinds.includes('pickup') && distanceMeters(geo.position!, z.stopPoint) < PICKUP_SEARCH_M)
-        .sort((a, b) => distanceMeters(geo.position!, a.stopPoint) - distanceMeters(geo.position!, b.stopPoint))[0]
+        .filter((z) => !z.hidden && z.kinds.includes('pickup') && distanceMeters(here, z.stopPoint) < PICKUP_SEARCH_M)
+        .sort((a, b) => distanceMeters(here, a.stopPoint) - distanceMeters(here, b.stopPoint))[0]
     : undefined
-  const pickupPoint = myPickupSpot?.stopPoint ?? (geo.position ? drive?.roadStart : undefined)
+  const pickupPoint = myPickupSpot?.stopPoint ?? (here ? drive?.path[0] : undefined)
 
   const startCarTrip = () => {
     const option = options.find((o) => o.zone.id === confirmedZoneId)
@@ -181,17 +135,17 @@ function Doorstep() {
     if (kind === 'dropoff') {
       const legs: NavLeg[] = []
       // You're not standing on a road (e.g. inside a building): walk to the pickup curb first.
-      if (geo.position && pickupPoint && distanceMeters(geo.position, pickupPoint) > 25) {
+      if (here && pickupPoint && distanceMeters(here, pickupPoint) > 25) {
         legs.push({
           travel: 'WALKING',
-          from: geo.position,
+          from: here,
           to: pickupPoint,
           toLabel: myPickupSpot ? `your pickup spot (${myPickupSpot.name})` : 'your pickup spot',
           stage: 'Walk to pickup',
         })
       }
       legs.push(
-        { travel: 'DRIVING', from: pickupPoint ?? driveFrom, to: zone.stopPoint, toLabel: zone.name, stage: 'Ride to curb' },
+        { travel: 'DRIVING', from: pickupPoint ?? here ?? CAMPUS_GATE, to: zone.stopPoint, toLabel: zone.name, stage: 'Ride to curb' },
         { travel: 'WALKING', from: zone.stopPoint, to: entrance.location, toLabel: entrance.label, stage: 'Walk to door' },
       )
       startTrip(legs, entrance.label, entrance.location)
@@ -205,13 +159,25 @@ function Doorstep() {
     }
   }
 
-  // Reached the end of a leg with more to go (e.g. the car reached the curb): continue on foot.
+  // Reached the end of a leg with more to go (e.g. the car reached the curb): continue to the next one.
   const legArrived = !!nav?.arrived && !!trip && trip.index < trip.legs.length - 1
   useEffect(() => {
     if (!legArrived) return
     const id = setTimeout(() => setTrip((t) => (t ? { ...t, index: t.index + 1 } : t)), 2000)
     return () => clearTimeout(id)
   }, [legArrived])
+
+  const clearSelection = () => {
+    searchRequest.current?.abort()
+    setDestination(undefined)
+    setSearchError(undefined)
+    setSelectedZoneId(undefined)
+    setSelectedDoorId(undefined)
+    setEditingZoneId(undefined)
+    setConfirmedZoneId(undefined)
+    setConfirmedTripId(undefined)
+    setFeedbackSent(false)
+  }
 
   const requireUser = (then: () => void) => {
     if (user) then()
@@ -227,27 +193,32 @@ function Doorstep() {
       setExpanded(true)
     })
 
-  const search = (text: string) => {
-    try {
-      // Your own saved spots win: typing "My apartment" goes straight to that spot.
-      const q = text.trim().toLowerCase()
-      const spot = zoneStore.personal.find((z) => !z.hidden && z.name.trim().length > 2 && q.includes(z.name.trim().toLowerCase()))
-      const spotBuilding = spot && campus.buildings.find((b) => b.id === spot.buildingId)
-      if (spot && spotBuilding) {
-        setDestination({ building: spotBuilding, room: text.match(/\b([a-z]?\d{2,4}[a-z]?)\b/i)?.[1]?.toUpperCase() ?? '' })
-        setSelectedZoneId(spot.id)
-      } else {
-        const found = parseDestination(text, campus.buildings)
-        // Several buildings can share a name (13 "University Apartments"): prefer one you have a spot at.
-        const sameName = campus.buildings.filter((b) => b.name === found.building.name)
-        const withSpot = sameName.find((b) => zoneStore.personal.some((z) => !z.hidden && z.buildingId === b.id))
-        setDestination(withSpot ? { ...found, building: withSpot } : found)
-        setSelectedZoneId(undefined)
-      }
+  const search = async (text: string) => {
+    searchRequest.current?.abort()
+    const controller = new AbortController()
+    searchRequest.current = controller
+    // Your own saved spots win: typing "My apartment" goes straight to that spot.
+    const q = text.trim().toLowerCase()
+    const spot = zoneStore.personal.find((z) => !z.hidden && z.name.trim().length > 2 && q.includes(z.name.trim().toLowerCase()))
+    const spotBuilding = spot && campus.buildings.find((b) => b.id === spot.buildingId)
+    if (spot && spotBuilding) {
+      setDestination({ building: spotBuilding, room: text.match(/\b([a-z]?\d{2,4}[a-z]?)\b/i)?.[1]?.toUpperCase() ?? '' })
       setSearchError(undefined)
+      setSelectedZoneId(spot.id)
+      setSelectedDoorId(undefined)
+      setConfirmedZoneId(undefined)
+      return
+    }
+    try {
+      const result = await api.search(text, controller.signal)
+      if (controller.signal.aborted) return
+      setDestination(result)
+      setSearchError(undefined)
+      setSelectedZoneId(undefined)
       setSelectedDoorId(undefined)
       setConfirmedZoneId(undefined)
     } catch (e) {
+      if (controller.signal.aborted) return
       setDestination(undefined)
       setSearchError((e as Error).message)
     }
@@ -264,6 +235,7 @@ function Doorstep() {
   }
 
   const handleSelectZone = (zone: Zone) => {
+    searchRequest.current?.abort()
     if (panel === 'edit') {
       setEditingZoneId(zone.id)
       return
@@ -307,13 +279,14 @@ function Doorstep() {
         editingZoneId={editingZone?.source === 'personal' ? editingZone.id : undefined}
         me={geo.position && { position: geo.position, accuracy: geo.accuracy, heading: geo.heading }}
         drivePath={walking ? undefined : drive?.path}
-        walkPath={walk?.path ?? (walkFrom && walkTo ? [walkFrom, walkTo] : undefined)}
+        walkPath={walk?.path}
         editMode={panel === 'edit'}
         tool={tool}
         draftClosure={draftClosure}
         onMapClick={handleMapClick}
         onSelectZone={handleSelectZone}
         onSelectBuilding={(b) => {
+          searchRequest.current?.abort()
           setDestination({ building: b, room: '' })
           setSearchError(undefined)
           setSelectedZoneId(undefined)
@@ -337,6 +310,16 @@ function Doorstep() {
             onReportClosure={() => openPanel('closure')}
           />
         </div>
+        {(destination || activeZoneId || editingZoneId || selectedDoorId) && (
+          <Button
+            className="bg-surface shadow-[var(--shadow-float)]"
+            aria-label="Clear selected building and zone"
+            onClick={clearSelection}
+          >
+            <span aria-hidden>×</span>
+            Clear selection
+          </Button>
+        )}
         <LocateButton geo={geo} />
       </div>
 
@@ -346,6 +329,8 @@ function Doorstep() {
           <span className="text-lg font-extrabold tracking-tight">Doorstep</span>
           <span className="ml-auto text-xs text-muted">the right door, every time</span>
         </div>
+
+        {(authError || zoneStore.error || closureStore.error) && <Notice tone="error">{authError ?? zoneStore.error ?? closureStore.error}</Notice>}
 
         {trip && (
           <NavPanel
@@ -375,28 +360,29 @@ function Doorstep() {
               setMode(m)
               setConfirmedZoneId(undefined)
             }}
-            doors={shownDoors}
+            doors={doors}
             selectedDoorId={activeDoor?.entrance.id}
             onSelectDoor={setSelectedDoorId}
             walkStart={walkStart}
             stepFree={stepFree}
             onStepFree={setStepFreeChoice}
-            options={shownOptions}
+            options={options}
             selectedZoneId={activeZoneId}
             onSelect={setSelectedZoneId}
             confirmedZoneId={confirmedZoneId}
-            onConfirm={setConfirmedZoneId}
+            onConfirm={(id) => { setConfirmedZoneId(id); setConfirmedTripId(planning.data?.tripId); setFeedbackSent(false) }}
+            feedbackSent={feedbackSent}
             drive={drive && { seconds: drive.seconds, fromGps: !!geo.position }}
-            generatingCurbs={campus.generating}
+            planning={planning.loading}
             onSearch={search}
-            onClear={() => {
-              setDestination(undefined)
-              setSearchError(undefined)
-              setConfirmedZoneId(undefined)
-            }}
+            onClear={clearSelection}
             onSignIn={() => setTab('preferences')}
-            onFeedback={(f) => user && void saveProfile(learn(user.profile, f))}
-            error={searchError ?? campus.error}
+            onFeedback={async (f) => {
+              if (!confirmedTripId) throw new Error("Confirm a route while signed in before sending feedback")
+              await sendFeedback(confirmedTripId, f)
+              setFeedbackSent(true)
+            }}
+            error={searchError ?? planning.error ?? driveResult.error ?? campus.error}
           />
         )}
 

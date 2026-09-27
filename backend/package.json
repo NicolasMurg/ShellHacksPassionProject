@@ -1,18 +1,38 @@
 {
   "name": "backend",
-  "module": "index.ts",
+  "module": "src/index.ts",
   "type": "module",
   "private": true,
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "mongodb-memory-server": "10",
+    "prisma": "6.19.0"
   },
   "peerDependencies": {
     "typescript": "^5"
   },
   "dependencies": {
-    "express": "^5.2.1"
+    "@prisma/client": "6.19.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.7.0",
+    "zod": "^4.6.5"
   },
   "scripts": {
-    "dev": "bun --hot src/index.ts"
+    "dev": "bun --hot src/index.ts",
+    "start": "bun src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "prisma generate --schema db/schema.prisma",
+    "db:validate": "prisma validate --schema db/schema.prisma",
+    "db:format": "prisma format --schema db/schema.prisma",
+    "db:push": "prisma db push --schema db/schema.prisma",
+    "db:check": "bun db/check.ts",
+    "postinstall": "bun run db:generate",
+    "db:seed": "bun db/seed.ts",
+    "test": "bun test --timeout 120000",
+    "seed": "bun db/seed.ts",
+    "db:curbs": "bun db/generate-curbs.ts"
   }
 }

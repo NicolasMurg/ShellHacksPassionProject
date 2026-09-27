@@ -16,13 +16,15 @@ type Props = {
 export function ClosurePanel({ user, draft, closures, onUndo, onSubmit, onRemove, onDone }: Props) {
   const [reason, setReason] = useState('')
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string>()
 
   const submit = async () => {
     setSaving(true)
     try {
       await onSubmit(reason.trim() || 'Road closed')
       setReason('')
-    } finally {
+      setError(undefined)
+    } catch (e) { setError((e as Error).message) } finally {
       setSaving(false)
     }
   }
@@ -31,7 +33,7 @@ export function ClosurePanel({ user, draft, closures, onUndo, onSubmit, onRemove
     <>
       <header className="flex items-start justify-between gap-3">
         <div>
-          <p className="m-0 text-xs font-semibold text-muted">Everyone's routes avoid it</p>
+          <p className="m-0 text-xs font-semibold text-muted">Help others spot access problems</p>
           <h1 className="m-0 text-xl font-extrabold tracking-tight">Report a closed road</h1>
         </div>
         <Button className="h-9 text-sm" onClick={onDone}>
@@ -45,6 +47,7 @@ export function ClosurePanel({ user, draft, closures, onUndo, onSubmit, onRemove
           : `${draft.length} point${draft.length === 1 ? '' : 's'} marked. ${draft.length < 2 ? 'Add at least one more.' : 'Keep tapping or submit.'}`}
       </Notice>
 
+      {error && <Notice tone="error">{error}</Notice>}
       <Field label="What's going on?">
         <input
           className={inputClass}
@@ -74,7 +77,7 @@ export function ClosurePanel({ user, draft, closures, onUndo, onSubmit, onRemove
                   by {c.reportedBy} · {new Date(c.createdAt).toLocaleDateString()}
                 </span>
               </span>
-              {c.reportedBy === user.name && (
+              {c.ownerId === user.id && (
                 <Button variant="quiet" className="h-8 px-2 text-sm" onClick={() => onRemove(c.id)}>
                   Reopen
                 </Button>
