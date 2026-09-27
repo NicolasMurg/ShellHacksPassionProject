@@ -4,6 +4,7 @@ import { useState } from 'react'
 // Which base map is shown and which Google overlays are drawn on top.
 // Saved in this browser so the choice survives a reload.
 
+// (No "terrain": Google's terrain only adds hill shading, and Miami is flat, so it looked the same as Light.)
 export type MapStyle = 'dark' | 'light' | 'satellite' | 'hybrid'
 
 export type MapLayers = {

@@ -1,6 +1,7 @@
 import { AdvancedMarker, Polygon, Polyline, useMap } from '@vis.gl/react-google-maps'
 import { useEffect, useRef, useState } from 'react'
 import type { LatLng } from '../types'
+import { CarIcon } from './icons'
 
 // Keep in sync with --color-personal in index.css (the map needs raw hex).
 const COLOR = '#a78bfa'
@@ -110,8 +111,8 @@ export function PaintLayer({ focus, strokes, area, stopPoint, onStroke }: Paint)
       {live.length > 0 && <Polyline path={live} {...brush} />}
       {stopPoint && (
         <AdvancedMarker position={stopPoint} zIndex={70} title="The car stops here: the closest road to your spot">
-          <div className="pin-stop" style={{ borderColor: COLOR, background: COLOR }}>
-            🚗
+          <div className="pin-stop" style={{ borderColor: COLOR, background: COLOR, color: '#1e1433' }}>
+            <CarIcon size={20} />
           </div>
         </AdvancedMarker>
       )}

@@ -1,4 +1,4 @@
-import type { ApiArrivalDestination, ApiArrivalPlan, ApiPersonalStop, ApiBuilding, ApiClosure, ApiPlan, ApiRoute, ApiUser, ApiZone } from '../../backend/src/contracts'
+import type { ApiArrivalDestination, ApiArrivalPlan, ApiCurbAudit, ApiPersonalStop, ApiBuilding, ApiClosure, ApiPlan, ApiRoute, ApiTripParse, ApiUser, ApiZone } from '../../backend/src/contracts'
 import type { LatLng, User, WalkingProfile, Zone } from './types'
 import { fromPoint, fromBuilding, fromClosure, fromEntrance, fromRoute, fromUser, fromZone, toPoint, toZone } from './api/adapters'
 
@@ -60,6 +60,13 @@ export async function feedback(token: string, tripId: string, paceFeedback: 'fas
   return fromUser(result.user)
 }
 export const newId = (prefix: string) => `${prefix}-${crypto.randomUUID()}`
+
+// Gemini features (the key stays on the server).
+export type CurbAudit = ApiCurbAudit
+export type TripParse = ApiTripParse
+export const curbCheck = (stop: LatLng, door?: LatLng, signal?: AbortSignal) =>
+  http<CurbAudit>('POST', '/api/ai/curb-check', undefined, { stop: toPoint(stop), door: door && toPoint(door) }, signal)
+export const parseTrip = (text: string, signal?: AbortSignal) => http<TripParse>('POST', '/api/ai/parse-trip', undefined, { text }, signal)
 
 export type ArrivalDestination = { name: string; location: LatLng; placeId?: string }
 export type ArrivalInput = { destination: ArrivalDestination; origin?: LatLng; stopPoint?: LatLng; stepFree: boolean; kind: 'dropoff' | 'pickup' }

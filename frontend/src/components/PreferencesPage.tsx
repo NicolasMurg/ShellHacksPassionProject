@@ -5,22 +5,49 @@ import { useMotion } from '../state/motion'
 import type { Mobility, Pace, User, WalkingProfile } from '../types'
 import { MOBILITY_LABEL, PACE_LABEL, walkingSpeed } from '../walking'
 import { cx } from './cx'
-import { BayNight, NightScene } from './NightScene'
+import {
+  CaneIcon,
+  CarIcon,
+  ClockIcon,
+  CrutchesIcon,
+  LocateIcon,
+  RunIcon,
+  SneakerIcon,
+  StrollerIcon,
+  TurtleIcon,
+  WalkIcon,
+  WheelchairIcon,
+} from './icons'
+import { BayDay, BayNight, NightScene } from './NightScene'
 import { Button, Field, LogoMark, Notice, inputClass } from './ui'
 
-/** The Preferences tab: the sign-in page when signed out, personal settings when signed in. */
-export function PreferencesPage({ onOpenMap }: { onOpenMap: () => void }) {
+/**
+ * The Preferences tab: the sign-in page when signed out, personal settings when signed in.
+ * It stays mounted and fades/slides in and out over the map instead of switching abruptly.
+ * `light` (the map is in Light mode) gives signed-in users a daytime version.
+ */
+export function PreferencesPage({ open, light, onOpenMap }: { open: boolean; light: boolean; onOpenMap: () => void }) {
   const { user, error } = useAuth()
+  const daytime = light && !!user // the sign-in page keeps its night-city scene
   return (
-    // Signed out: a night-city scene. Signed in: nearly solid over the (still mounted) map.
     <section
       aria-label="Preferences"
-      className="absolute inset-0 z-40 overflow-y-auto overscroll-contain bg-ink"
+      aria-hidden={!open}
+      inert={!open}
+      className={cx(
+        'absolute inset-0 z-40 overflow-hidden bg-ink transition-[opacity,transform,visibility] duration-300 ease-out motion-reduce:transition-none',
+        open ? 'visible translate-y-0 opacity-100' : 'invisible pointer-events-none translate-y-4 opacity-0',
+        daytime && 'theme-light',
+      )}
     >
-      {user ? <BayNight /> : <NightScene />}
-      <div className="relative mx-auto flex min-h-full w-full max-w-md flex-col gap-5 px-4 pb-32 pt-[max(20px,env(safe-area-inset-top))]">
-        {error && <Notice tone="error">{error}</Notice>}
-        {user ? <Preferences key={user.id} user={user} onOpenMap={onOpenMap} /> : <SignIn onOpenMap={onOpenMap} />}
+      {/* The scene stays put behind the cards; only the cards scroll. */}
+      {!user ? <NightScene /> : daytime ? <BayDay /> : <BayNight />}
+      <div className="absolute inset-0 overflow-y-auto overscroll-contain">
+        {/* Extra top room on phones so the corner Preferences/Map switch never covers content. */}
+        <div className="relative mx-auto flex min-h-full w-full max-w-md flex-col gap-5 px-4 pb-12 pt-[max(68px,env(safe-area-inset-top))] sm:pt-[max(20px,env(safe-area-inset-top))]">
+          {error && <Notice tone="error">{error}</Notice>}
+          {user ? <Preferences key={user.id} user={user} onOpenMap={onOpenMap} /> : <SignIn onOpenMap={onOpenMap} />}
+        </div>
       </div>
     </section>
   )
@@ -48,7 +75,7 @@ function Choices<T extends string>({
 }: {
   label: string
   value: T
-  options: { value: T; label: string; icon: string }[]
+  options: { value: T; label: string; icon: ReactNode }[]
   onChange: (v: T) => void
   columns?: number
 }) {
@@ -70,7 +97,7 @@ function Choices<T extends string>({
                 : 'border-line bg-raised text-muted hover:text-fg',
             )}
           >
-            <span aria-hidden className={cx('text-2xl transition-transform', checked && 'scale-110')}>
+            <span aria-hidden className={cx('transition-[transform,color]', checked ? 'scale-110 text-accent' : 'text-muted')}>
               {o.icon}
             </span>
             {o.label}
@@ -113,14 +140,21 @@ function SignIn({ onOpenMap }: { onOpenMap: () => void }) {
         </div>
         <div>
           <h1 className="m-0 text-4xl font-extrabold tracking-tight">
-            Door<span className="text-brand">step</span>
+            Door<span className="text-accent">Step</span>
           </h1>
           <p className="m-0 mt-1.5 text-muted">Arrive at the right door, every time.</p>
         </div>
         <ul className="m-0 flex list-none flex-wrap justify-center gap-2 p-0 text-xs font-semibold text-muted">
-          {['🚗 Smart drop-offs', '♿ Step-free routes', '⏱ Your own pace'].map((f) => (
-            <li key={f} className="rounded-full border border-line bg-raised px-3 py-1.5">
-              {f}
+          {(
+            [
+              [<CarIcon size={15} />, 'Smart drop-offs'],
+              [<WheelchairIcon size={15} />, 'Step-free routes'],
+              [<ClockIcon size={15} />, 'Your own pace'],
+            ] as const
+          ).map(([icon, label]) => (
+            <li key={label} className="flex items-center gap-1.5 rounded-full border border-line bg-raised px-3 py-1.5">
+              <span className="text-accent">{icon}</span>
+              {label}
             </li>
           ))}
         </ul>
@@ -273,8 +307,14 @@ function HeightField({ heightCm, onChange }: { heightCm?: number; onChange: (hei
   )
 }
 
-const PACE_ICON: Record<Pace, string> = { slow: '🐢', average: '🚶', fast: '🐇' }
-const MOBILITY_ICON: Record<Mobility, string> = { none: '👟', cane: '🦯', crutches: '🩼', wheelchair: '♿', stroller: '👶' }
+const PACE_ICON: Record<Pace, ReactNode> = { slow: <TurtleIcon size={28} />, average: <WalkIcon size={28} />, fast: <RunIcon size={28} /> }
+const MOBILITY_ICON: Record<Mobility, ReactNode> = {
+  none: <SneakerIcon size={28} />,
+  cane: <CaneIcon size={28} />,
+  crutches: <CrutchesIcon size={28} />,
+  wheelchair: <WheelchairIcon size={28} />,
+  stroller: <StrollerIcon size={28} />,
+}
 const MOBILITY_SHORT: Record<Mobility, string> = { none: 'No aid', cane: 'Cane', crutches: 'Crutches', wheelchair: 'Wheelchair', stroller: 'Stroller' }
 
 // Speed gauge range in m/s (covers every profile the model can produce).
@@ -323,7 +363,7 @@ function Preferences({ user, onOpenMap }: { user: User; onOpenMap: () => void })
   return (
     <>
       <div className="flex items-center gap-3 rounded-[var(--radius-sheet)] border border-line bg-surface p-4 shadow-[var(--shadow-float)]">
-        <span aria-hidden className="grid size-13 shrink-0 place-items-center rounded-full bg-brand text-lg font-extrabold text-accent-ink">
+        <span aria-hidden className="grid size-13 shrink-0 place-items-center rounded-full bg-accent text-lg font-extrabold text-accent-ink">
           {initials || '?'}
         </span>
         <span className="min-w-0 flex-1">
@@ -355,20 +395,21 @@ function Preferences({ user, onOpenMap }: { user: User; onOpenMap: () => void })
                 </span>
               </span>
               <span className="text-2xl font-extrabold tabular-nums">
-                <span className="text-brand">{speed.toFixed(2)}</span>
+                <span className="text-accent">{speed.toFixed(2)}</span>
                 <span className="ml-1 text-xs font-bold text-muted">m/s</span>
               </span>
             </div>
             <div aria-hidden className="h-1.5 overflow-hidden rounded-full bg-high">
               <div
-                className="h-full rounded-full bg-brand transition-[width] duration-500"
+                className="h-full rounded-full bg-accent transition-[width] duration-500"
                 style={{ width: `${Math.round(gauge * 100)}%` }}
               />
             </div>
-            <p className="m-0 text-xs text-muted">
+            <p className="m-0 flex gap-1.5 text-xs text-muted">
+              <LocateIcon size={14} className="mt-px shrink-0" />
               {measured
-                ? `📍 Your GPS measured ${measured.speed.toFixed(2)} m/s over ${Math.round(walked.meters)} m of walking (rides and bike stretches don't count). Rate your walk after a trip to teach Doorstep your pace.`
-                : "📍 Share your location and walk about 150 m to measure your real walking pace. Rides and bike stretches don't count."}
+                ? `Your GPS measured ${measured.speed.toFixed(2)} m/s over ${Math.round(walked.meters)} m of walking (rides and bike stretches don't count). Rate your walk after a trip to teach DoorStep your pace.`
+                : "Share your location and walk about 150 m to measure your real walking pace. Rides and bike stretches don't count."}
             </p>
           </div>
         </Card>
@@ -398,7 +439,7 @@ function Preferences({ user, onOpenMap }: { user: User; onOpenMap: () => void })
         </Button>
       </form>
 
-      <Button className="h-12" onClick={onOpenMap}>
+      <Button variant="solid" className="h-12" onClick={onOpenMap}>
         Open map →
       </Button>
     </>

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { CarIcon } from './icons'
 import { Button, Field, Notice, inputClass } from './ui'
 
 type Props = {
@@ -48,7 +49,8 @@ export function MarkZonePanel(p: Props) {
           </Notice>
         ) : (
           <Notice tone="success">
-            🚗 The car stops on the closest road,{' '}
+            <CarIcon size={16} className="mr-1 inline -translate-y-px" />
+            The car stops on the closest road,{' '}
             {p.road.metersFromSpot ? `${p.road.metersFromSpot} m from your spot` : 'right at your spot'}
             {p.road.driveMinutes !== undefined && ` · ${p.road.driveMinutes} min drive from ${p.road.from}`}
           </Notice>

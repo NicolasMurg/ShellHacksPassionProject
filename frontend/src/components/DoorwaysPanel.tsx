@@ -3,6 +3,7 @@ import { doorLocation, removeDoor, removeLink, type DoorLink, type Doorway } fro
 import { useCampusGraphs } from '../state/routing'
 import { MAX_DOOR_REACH_M, distanceToNetwork, routeWalk } from '../walkRouter'
 import { cx } from './cx'
+import { DoorIcon } from './icons'
 import { Button, Notice } from './ui'
 
 type Props = {
@@ -40,7 +41,9 @@ export function DoorwaysPanel(p: Props) {
         <div className="flex flex-col gap-2 rounded-2xl border border-selected/40 bg-selected/10 p-3.5">
           <div className="flex items-center justify-between gap-2">
             <span>
-              <span className="block font-bold">🚪 {selected.label}</span>
+              <span className="flex items-center gap-1.5 font-bold">
+                <DoorIcon size={17} className="text-selected" /> {selected.label}
+              </span>
               <span className="text-xs text-muted">
                 Square row {selected.row} · col {selected.col}. Tap another door to link it.
               </span>

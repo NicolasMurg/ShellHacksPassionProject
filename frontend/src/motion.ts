@@ -139,4 +139,3 @@ export const MODE_LABEL: Record<TravelMode, string> = {
   cycling: 'Bike or scooter',
   vehicle: 'In a vehicle',
 }
-export const MODE_ICON: Record<TravelMode, string> = { unknown: '📍', still: '🧍', walking: '🚶', cycling: '🚲', vehicle: '🚗' }

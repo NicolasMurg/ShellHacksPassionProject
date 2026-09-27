@@ -1,11 +1,12 @@
-import { useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
+import { useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
 import { cx } from './cx'
+import { PauseIcon, PlayIcon } from './icons'
 
 // A video-style timeline for a simulated trip: one chapter per leg (walk, ride, walk),
 // click or drag anywhere to jump there, hover to preview, play/pause, arrow keys.
 // Times are real trip time (the simulation itself plays faster).
 
-export type TimelineChapter = { label: string; icon: string; seconds: number }
+export type TimelineChapter = { label: string; icon: ReactNode; seconds: number }
 
 type Props = {
   chapters: TimelineChapter[]
@@ -106,9 +107,9 @@ export function TripTimeline({ chapters, elapsed, playing, onPlayPause, onSeek }
         type="button"
         onClick={onPlayPause}
         aria-label={playing ? 'Pause the simulated trip' : 'Play the simulated trip'}
-        className="grid size-10 shrink-0 place-items-center rounded-full bg-accent text-base font-black text-accent-ink hover:brightness-110"
+        className="grid size-10 shrink-0 place-items-center rounded-full bg-accent text-accent-ink hover:brightness-110"
       >
-        <span aria-hidden>{playing ? '❚❚' : '▶'}</span>
+        {playing ? <PauseIcon size={18} strokeWidth={2.6} /> : <PlayIcon size={18} fill="currentColor" />}
       </button>
 
       <div className="min-w-0 flex-1">
@@ -160,7 +161,8 @@ export function TripTimeline({ chapters, elapsed, playing, onPlayPause, onSeek }
               className="pointer-events-none absolute bottom-full mb-1.5 -translate-x-1/2 whitespace-nowrap rounded-lg border border-line bg-surface px-2 py-1 text-[11px] font-bold shadow-[var(--shadow-float)]"
               style={{ left: Math.min(Math.max(hover.x, 40), hover.width - 40) }}
             >
-              <span aria-hidden>{previewChapter.icon}</span> {previewChapter.label} · {formatTripTime(preview)}
+              <span aria-hidden className="mr-1 inline-flex align-[-3px]">{previewChapter.icon}</span>
+              {previewChapter.label} · {formatTripTime(preview)}
             </div>
           )}
         </div>
@@ -170,7 +172,8 @@ export function TripTimeline({ chapters, elapsed, playing, onPlayPause, onSeek }
             {formatTripTime(shown)} / {formatTripTime(total)}
           </span>
           <span>
-            <span aria-hidden>{chapterAt(chapters, shown).icon}</span> {chapterAt(chapters, shown).label}
+            <span aria-hidden className="mr-1 inline-flex align-[-3px]">{chapterAt(chapters, shown).icon}</span>
+            {chapterAt(chapters, shown).label}
           </span>
         </div>
       </div>

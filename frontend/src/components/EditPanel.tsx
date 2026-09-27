@@ -179,7 +179,7 @@ function ZoneForm({
           Close
         </button>
       </div>
-      <Notice>Drag the shape or its corners to reshape it. Drag 🚗 to move exactly where the car stops.</Notice>
+      <Notice>Drag the shape or its corners to reshape it. Drag the car marker to move exactly where the car stops.</Notice>
 
       <Field label="Name">
         <input className={inputClass} value={zone.name} placeholder="e.g. My apartment" onChange={(e) => onChange({ ...zone, name: e.target.value })} />
@@ -194,7 +194,7 @@ function ZoneForm({
         </select>
       </Field>
       {doors.length > 1 && (
-        <Field label="Walk me to" hint="Doorstep guides you from the car to this door. The closest one is picked for you.">
+        <Field label="Walk me to" hint="DoorStep guides you from the car to this door. The closest one is picked for you.">
           <select className={inputClass} value={zone.entranceId} onChange={(e) => onChange({ ...zone, entranceId: e.target.value })}>
             {doors.map((d, i) => (
               <option key={d.id} value={d.id}>

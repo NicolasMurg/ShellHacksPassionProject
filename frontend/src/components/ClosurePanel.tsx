@@ -72,7 +72,9 @@ export function ClosurePanel({ user, draft, closures, onUndo, onSubmit, onRemove
           {closures.map((c) => (
             <div key={c.id} className="flex items-center justify-between gap-2 rounded-xl border border-line bg-raised px-3.5 py-2.5">
               <span>
-                <span className="block text-sm font-semibold">⛔ {c.reason}</span>
+                <span className="flex items-center gap-1.5 text-sm font-semibold">
+                  <span aria-hidden className="size-2 rounded-full bg-closed" /> {c.reason}
+                </span>
                 <span className="text-xs text-muted">
                   by {c.reportedBy} · {new Date(c.createdAt).toLocaleDateString()}
                 </span>
