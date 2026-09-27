@@ -2,12 +2,12 @@ import { useState } from 'react'
 import * as api from '../api'
 import { formatWalk } from '../geo'
 import type { ArrivalState } from '../state/arrivals'
-import { Button, Field, inputClass, Notice, Segmented, Switch } from './ui'
+import { Button, Field, inputClass, Notice, Switch } from './ui'
 import { StreetViewPreview } from './StreetViewPreview'
 
-export function ArrivalPanel({ destination, state, token, onSignIn, kind, onKind, stepFree, onStepFree }: {
+export function ArrivalPanel({ destination, state, token, onSignIn, stepFree, onStepFree }: {
   destination: api.ArrivalDestination; state: ArrivalState; token?: string; onSignIn: () => void;
-  kind: 'dropoff' | 'pickup'; onKind: (kind: 'dropoff' | 'pickup') => void; stepFree: boolean; onStepFree: (v: boolean) => void
+  stepFree: boolean; onStepFree: (v: boolean) => void
 }) {
   const [name, setName] = useState<string>()
   const [instructions, setInstructions] = useState<string>()
@@ -26,11 +26,10 @@ export function ArrivalPanel({ destination, state, token, onSignIn, kind, onKind
   return <>
     <header><p className="m-0 text-xs font-semibold text-muted">Arrival point</p>
       <h1 className="m-0 text-xl font-extrabold">{destination.name}</h1></header>
-    <Segmented label="Arrival type" value={kind} onChange={onKind} options={[{ value: 'dropoff', label: 'Drop-off' }, { value: 'pickup', label: 'Pickup' }]} />
     <Switch label="Prefer step-free access" checked={stepFree} onChange={onStepFree} />
     {!state.started && <>
       <Notice>Choose where the car should meet you. You can adjust the suggested pin and save a private preference.</Notice>
-      <Button variant="primary" onClick={state.start}>{kind === 'dropoff' ? 'Drop off here' : 'Pick up here'}</Button>
+      <Button variant="primary" onClick={state.start}>Drop off here</Button>
     </>}
     {state.loading && <Notice>Checking arrival points and reported closures…</Notice>}
     {(state.error || error) && <Notice tone="error">{state.error ?? error}</Notice>}
@@ -40,16 +39,16 @@ export function ArrivalPanel({ destination, state, token, onSignIn, kind, onKind
       <Button onClick={state.moving ? state.cancelMove : state.move}>{state.moving ? 'Cancel moving' : 'Move pin'}</Button>
       <Button onClick={state.suggest} disabled={state.loading}>Suggest stops again</Button>
     </div>}
-    {state.moving && <Notice>Tap the map or drag the orange stop pin to choose a point within 500 m of the destination. We’ll check its route before you confirm.</Notice>}
+    {state.moving && <Notice>Tap the map or drag the orange stop pin to choose a point within 100 m of the destination. We’ll check its route before you confirm.</Notice>}
     {!!data?.options.length && <div className="flex flex-wrap gap-2" aria-label="Arrival options">
       {data.options.map((o, i) => <Button key={o.id} aria-pressed={o.id === option?.id} onClick={() => state.select(o.id)}>
         {o.source === 'saved' ? 'Your saved spot' : `Option ${i + 1}`}
       </Button>)}
     </div>}
     {option && <section className="flex flex-col gap-3 rounded-2xl border border-selected bg-selected/10 p-4">
-      <p className="m-0 text-xs font-bold text-selected">{state.confirmed ? `${kind === 'dropoff' ? 'Drop-off' : 'Pickup'} confirmed` : option.source === 'saved' ? 'Private saved preference · unverified' : 'Suggested stop · unverified'}</p>
+      <p className="m-0 text-xs font-bold text-selected">{state.confirmed ? 'Drop-off confirmed' : option.source === 'saved' ? 'Private saved preference · unverified' : 'Suggested stop · unverified'}</p>
       <h2 className="m-0 text-lg font-bold">{option.name}</h2>
-      <p className="m-0 text-sm">{option.drive && `${Math.max(1, Math.round(option.drive.seconds / 60))} min drive · `}{formatWalk(option.walkSeconds)} {kind === 'pickup' ? 'from' : 'to'} the destination</p>
+      <p className="m-0 text-sm">{option.drive && `${Math.max(1, Math.round(option.drive.seconds / 60))} min drive · `}{formatWalk(option.walkSeconds)} to the destination</p>
       {option.instructions && <p className="m-0 text-sm">{option.instructions}</p>}
       <p className="m-0 font-mono text-xs text-muted">{option.stopPoint.lat.toFixed(6)}, {option.stopPoint.lng.toFixed(6)}</p>
       <StreetViewPreview target={option.stopPoint} />

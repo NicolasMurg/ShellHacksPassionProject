@@ -5,6 +5,8 @@ import { useArrival } from './state/arrivals'
 import { AccountMenu } from './components/Account'
 import { ClosurePanel } from './components/ClosurePanel'
 import { DropoffPanel } from './components/DropoffPanel'
+import { TripForm } from './components/TripForm'
+import { WalkPlacePanel } from './components/WalkPlacePanel'
 import { EditPanel } from './components/EditPanel'
 import { LayerControl } from './components/LayerControl'
 import { cx } from './components/cx'
@@ -32,9 +34,10 @@ import { recordFix, resetWalked, useMotion } from './state/motion'
 import { locateInTrip, tripElapsed } from './tripTimeline'
 import { recordWalkingFix } from './state/speedGrid'
 import { useNavigation, type NavLeg } from './state/navigation'
-import { lockToDoorways } from './doorShortcuts'
+import { lockToDoorways, throughDoorways } from './doorShortcuts'
+import { PIN_REACH_M, PIN_ZONE_ID, clampPin, placedDoorsAt, reachArea, walkFromPin } from './dropPin'
 import { findAddress, useCampusGraphs, useGeolocation, useRoute, useServerPlan, type Geo } from './state/routing'
-import type { LatLng, Place, TravelMode, TripKind, Zone } from './types'
+import type { Entrance, LatLng, Place, TravelMode, Zone } from './types'
 import { needsStepFree, walkingSpeed } from './walking'
 
 const API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined
@@ -87,6 +90,11 @@ function Doorstep() {
   const [selectedDoorId, setSelectedDoorId] = useState<string>()
   // A typed starting address; without one, trips start from your GPS (or the campus gate).
   const [start, setStart] = useState<Place>()
+  // Your own drop-off pin, dragged anywhere within 100 m of the building, and why it moved.
+  const [pin, setPin] = useState<{ buildingId: string; point: LatLng }>()
+  const [pinNote, setPinNote] = useState<string>()
+  // Each Enter on the From/To form: the map shows the route, then brings you in to the drop-off.
+  const [planId, setPlanId] = useState(0)
   const routesLib = useMapsLibrary('routes')
   const walking = mode === 'walk'
   // A plain-English request that Gemini turned into these settings, and the door it asked for.
@@ -138,11 +146,71 @@ function Doorstep() {
   const weather = useWeather(CAMPUS_CENTER)
   const byWeather = <T extends { walkSeconds: number }>(list: T[]) =>
     weather && weather.kind !== 'clear' ? [...list].sort((a, b) => a.walkSeconds - b.walkSeconds) : list
-  const options = byWeather(
+  // Doors you placed at the destination count as its doors: then a drop-off walks from where
+  // the car stops to the closest door (by the walking path), whether it's yours or the building's.
+  const placedHere = useMemo(
+    () =>
+      destination && !walking
+        ? placedDoorsAt(
+            destination.building,
+            campus.buildings,
+            doorways.doors.map((d) => ({ id: d.id, label: d.label, location: doorLocation(d) })),
+          )
+        : [],
+    [destination, walking, campus.buildings, doorways.doors],
+  )
+  const destinationDoors = useMemo(
+    () => (destination ? [...destination.building.entrances, ...placedHere] : []),
+    [destination, placedHere],
+  )
+  const toClosestDoor = <T extends { zone: Zone; entrance: Entrance; walkSeconds: number; reason: string }>(o: T): T => {
+    if (placedHere.length === 0) return o
+    const closest = walkFromPin(campusGraph, destinationDoors, o.zone.stopPoint, stepFree)
+    if (!closest || closest.entrance.id === o.entrance.id) return o
+    const seconds = closest.meters / walkingSpeed(user?.profile)
+    return {
+      ...o,
+      entrance: closest.entrance,
+      walkSeconds: seconds,
+      reason: `${o.reason} · walks to ${closest.entrance.label}, the closest door`,
+      route: { path: closest.path, meters: closest.meters, seconds, warnings: [] },
+    }
+  }
+  const planned = byWeather(
     (planning.data?.options ?? []).flatMap((o) =>
-      o.zone ? [lockToDoorways({ ...o, zone: o.zone }, o.zone.stopPoint, o.entrance.location, lock)] : [],
+      o.zone ? [toClosestDoor(lockToDoorways({ ...o, zone: o.zone }, o.zone.stopPoint, o.entrance.location, lock))] : [],
     ),
   )
+  // Your pin: the car stops there, and you walk to the closest door (through linked doorways
+  // when that's quicker).
+  const pinWalk = useMemo(
+    () =>
+      pin && destination && !walking && pin.buildingId === destination.building.id
+        ? walkFromPin(campusGraph, destinationDoors, pin.point, stepFree)
+        : undefined,
+    [pin, destination, walking, campusGraph, stepFree, destinationDoors],
+  )
+  const pinTemplate = pinWalk && (planned.find((o) => o.entrance.id === pinWalk.entrance.id) ?? planned[0])
+  const pinOption = pin && pinWalk && pinTemplate && {
+    ...pinTemplate,
+    zone: {
+      id: PIN_ZONE_ID,
+      buildingId: pinWalk.entrance.buildingId,
+      entranceId: pinWalk.entrance.id,
+      source: 'personal' as const,
+      name: 'Spot you picked',
+      kinds: ['dropoff' as const],
+      polygon: [],
+      stopPoint: pin.point,
+      ownerId: null,
+    },
+    entrance: pinWalk.entrance,
+    walkSeconds: pinWalk.meters / walkingSpeed(user?.profile),
+    reason: `Where you put the pin · ${Math.round(pinWalk.meters)} m walk${pinWalk.indoorMeters > 0 ? ' through a doorway shortcut' : ''}`,
+    warnings: [],
+    route: { path: pinWalk.path, meters: pinWalk.meters, seconds: pinWalk.meters / walkingSpeed(user?.profile), warnings: [] },
+  }
+  const options = pinOption ? [pinOption, ...planned] : planned
   const doors = walking
     ? byWeather((planning.data?.options ?? []).map((d) => lockToDoorways(d, walkStart.location, d.entrance.location, lock)))
     : []
@@ -173,15 +241,37 @@ function Doorstep() {
 
   // Arrival planning starts from a typed "From" address, otherwise your GPS.
   const arrivalFrom = start?.location ?? geo.position
-  const arrival = useArrival(arrivalDestination && panel === 'dropoff' ? {
-    destination: arrivalDestination, kind: mode === 'pickup' ? 'pickup' : 'dropoff', stepFree,
+  const arrival = useArrival(arrivalDestination && panel === 'dropoff' && !walking ? {
+    destination: arrivalDestination, kind: 'dropoff', stepFree,
     origin: arrivalFrom ? { lat: +arrivalFrom.lat.toFixed(4), lng: +arrivalFrom.lng.toFixed(4) } : undefined,
   } : undefined, token, JSON.stringify([user?.profile, closureStore.closures]))
+  // Walk mode to a place off campus: Google's walk there, cutting through linked doorways on
+  // campus when that's shorter.
+  const placeFrom = start?.location ?? geo.position ?? walkStart.location
+  const placeFromName = start ? start.label.split(',')[0] : geo.position ? 'your location' : walkStart.label
+  const placeRoute = useRoute('WALKING', arrivalDestination && walking && panel === 'dropoff' ? placeFrom : undefined, arrivalDestination?.location)
+  const placeDoors = placeRoute.info && arrivalDestination && lock.graph
+    ? throughDoorways(lock.graph, [placeFrom, ...placeRoute.info.path, arrivalDestination.location], placeRoute.info.meters, stepFree)
+    : undefined
+  const placeWalk = placeRoute.info && {
+    path: placeDoors?.path ?? placeRoute.info.path,
+    meters: placeDoors?.meters ?? placeRoute.info.meters,
+    savedMeters: placeDoors?.savedMeters ?? 0,
+  }
+  const pinAnchors = useMemo(
+    () =>
+      arrivalDestination
+        ? [arrivalDestination.location]
+        : destination
+          ? [destination.building.location, ...destination.building.entrances.map((e) => e.location)]
+          : [],
+    [arrivalDestination, destination],
+  )
+  const pinArea = useMemo(() => reachArea(pinAnchors), [pinAnchors])
   const mapDestination = arrivalDestination ? { id: arrivalDestination.placeId ?? `point:${arrivalDestination.location.lat},${arrivalDestination.location.lng}`,
     name: arrivalDestination.name, code: '', location: arrivalDestination.location, entrances: [] } : destination?.building
 
-  // In-app navigation. A trip is one or more legs (walk to pickup, ride to the curb, walk to the door).
-  const kind: TripKind = mode === 'pickup' ? 'pickup' : 'dropoff'
+  // In-app navigation. A trip is one or more legs (ride to the curb, walk to the door).
   const [trip, setTrip] = useState<{ legs: NavLeg[]; index: number; destinationLabel: string; door?: LatLng }>()
   const [simulateChoice, setSimulateChoice] = useState<boolean>()
   const [voice, setVoice] = useState(false)
@@ -242,47 +332,25 @@ function Doorstep() {
     startTrip([{ travel: 'WALKING', from: walkStart.location, to: door.location, toLabel: door.label, stage: 'Walk to door' }], door.label, door.location)
   }
 
-  // Where the car picks you up: one of your own pickup spots near you, otherwise
-  // the start of the server's driving route (the nearest drivable point to you).
-  const PICKUP_SEARCH_M = 300
-  const here = geo.position
-  const myPickupSpot = here
-    ? zoneStore.personal
-        .filter((z) => !z.hidden && z.kinds.includes('pickup') && distanceMeters(here, z.stopPoint) < PICKUP_SEARCH_M)
-        .sort((a, b) => distanceMeters(here, a.stopPoint) - distanceMeters(here, b.stopPoint))[0]
-    : undefined
-  const pickupPoint = myPickupSpot?.stopPoint ?? (here ? drive?.path[0] : undefined)
-
+  // A drop-off: ride from "From" (a typed address, otherwise you or the campus gate) to the curb,
+  // then walk to the door.
   const startCarTrip = () => {
     const option = options.find((o) => o.zone.id === confirmedZoneId)
     if (!option) return
     const { zone, entrance } = option
-    if (kind === 'dropoff') {
-      const legs: NavLeg[] = []
-      // You're not standing on a road (e.g. inside a building): walk to the pickup curb first.
-      // A typed "From" address means you're starting there instead, so no walk leg.
-      if (!start && here && pickupPoint && distanceMeters(here, pickupPoint) > 25) {
-        legs.push({
-          travel: 'WALKING',
-          from: here,
-          to: pickupPoint,
-          toLabel: myPickupSpot ? `your pickup spot (${myPickupSpot.name})` : 'your pickup spot',
-          stage: 'Walk to pickup',
-        })
-      }
-      legs.push(
-        { travel: 'DRIVING', from: start?.location ?? pickupPoint ?? here ?? CAMPUS_GATE, to: zone.stopPoint, toLabel: zone.name, stage: 'Ride to curb' },
+    startTrip(
+      [
+        { travel: 'DRIVING', from: driveFrom, to: zone.stopPoint, toLabel: zone.name, stage: 'Ride to curb' },
         { travel: 'WALKING', from: zone.stopPoint, to: entrance.location, toLabel: entrance.label, stage: 'Walk to door' },
-      )
-      startTrip(legs, entrance.label, entrance.location)
-    } else {
-      // Pickup: you walk out to where the car will meet you.
-      startTrip(
-        [{ travel: 'WALKING', from: walkStart.location, to: zone.stopPoint, toLabel: `pickup spot (${zone.name.toLowerCase()})`, stage: 'Walk to pickup' }],
-        'Your pickup spot',
-        zone.stopPoint,
-      )
-    }
+      ],
+      entrance.label,
+      entrance.location,
+    )
+  }
+  const startPlaceWalk = () => {
+    if (!arrivalDestination) return
+    const { name, location } = arrivalDestination
+    startTrip([{ travel: 'WALKING', from: placeFrom, to: location, toLabel: name, stage: 'Walk there' }], name, location)
   }
 
   // Reached the end of a leg with more to go (e.g. the car reached the curb): continue to the next one.
@@ -323,6 +391,8 @@ function Doorstep() {
     setFeedbackSent(false)
     setAiTrip(undefined)
     setAiBusy(false)
+    setPin(undefined)
+    setPinNote(undefined)
     if (panel === 'mark') stopMarking()
   }
 
@@ -369,7 +439,7 @@ function Doorstep() {
       entranceId: door.id,
       source: 'personal',
       name,
-      kinds: [mode === 'pickup' ? 'pickup' : 'dropoff'],
+      kinds: ['dropoff'],
       polygon: paintArea,
       stopPoint: roadStop ?? paintCenter,
       ownerId: user.id,
@@ -410,7 +480,10 @@ function Doorstep() {
       if (controller.signal.aborted) return false
       clearSelection()
       if (result.building) setDestination({ building: result.building, room: result.room })
-      else if (result.destination) setArrivalDestination(result.destination)
+      else if (result.destination) {
+        setArrivalDestination(result.destination)
+        arrival.start()
+      }
       setSearchError(undefined)
       setSelectedZoneId(undefined)
       setSelectedDoorId(undefined)
@@ -447,26 +520,65 @@ function Doorstep() {
       setAiBusy(false)
       return
     }
-    if (parse.mode) setMode(parse.mode)
-    if (parse.stepFree) setStepFreeChoice(true)
-    setAiTrip({ parse, building: building?.name, door: building?.entrances.find((d) => d.id === parse.entranceId)?.label })
+    const heard = { ...parse, mode: parse.mode === 'pickup' ? ('dropoff' as const) : parse.mode }
+    if (heard.mode) setMode(heard.mode)
+    if (heard.stepFree) setStepFreeChoice(true)
+    setAiTrip({ parse: heard, building: building?.name, door: building?.entrances.find((d) => d.id === parse.entranceId)?.label })
     setExpanded(true)
   }
 
-  // Any address → Graham Center, unless a building or other place is already chosen.
+  // Any address as the starting point (Google finds it, preferring places near campus). A campus
+  // building ("Graham Center", "GC 150") starts at the building itself: from inside it, walks go
+  // out through its linked doors instead of from the road Google would snap it to.
   const chooseStart = async (address: string) => {
+    const found = await api.search(address).catch(() => undefined)
+    if (found?.building) {
+      setStart({ location: found.building.location, label: `${found.building.name}${found.room ? ` ${found.room}` : ''}` })
+      return
+    }
     if (!routesLib) throw new Error('Google Maps is still loading. Try again in a moment.')
     const graham = campus.buildings.find((b) => b.id === 'gc')
     setStart(await findAddress(routesLib, address, graham?.location ?? CAMPUS_CENTER))
+  }
+
+  const goToGrahamCenter = () => {
+    const graham = campus.buildings.find((b) => b.id === 'gc')
+    if (!graham) return
+    clearSelection()
+    setDestination({ building: graham, room: '' })
+  }
+
+  // What "To" found, shown back in the field.
+  const destinationLabel =
+    arrivalDestination?.name ?? (destination && `${destination.building.name}${destination.room ? ` ${destination.room}` : ''}`)
+
+  // Enter on the From/To form. From: an address, or empty for your location. To: a building and
+  // room, an address, a sentence for Gemini, or empty for Graham Center. Unchanged fields stay put.
+  const planTrip = async (from: string, to: string) => {
+    if (!from) setStart(undefined)
+    else if (from !== start?.label) await chooseStart(from)
+    if (!to) goToGrahamCenter()
+    else if (to !== destinationLabel) await search(to)
     setConfirmedZoneId(undefined)
     setConfirmedTripId(undefined)
     setFeedbackSent(false)
-    if (!destination && !arrivalDestination && graham) {
-      setDestination({ building: graham, room: '' })
-      setSearchError(undefined)
-      setSelectedZoneId(undefined)
-      setSelectedDoorId(undefined)
+    setExpanded(true)
+    setPlanId((n) => n + 1)
+  }
+
+  // Drag the car pin anywhere within 100 m of the building (or the place) and the trip goes there.
+  const movePin = (p: LatLng) => {
+    const { point, moved } = clampPin(pinAnchors, p)
+    const name = arrivalDestination?.name ?? destination?.building.name ?? 'the destination'
+    setPinNote(moved ? `Drop-off pins stay within ${PIN_REACH_M} m of ${name}, so yours is at the edge.` : undefined)
+    if (arrivalDestination) {
+      arrival.moveTo(point)
+      return
     }
+    if (!destination) return
+    setPin({ buildingId: destination.building.id, point })
+    setSelectedZoneId(PIN_ZONE_ID)
+    if (confirmedZoneId) setConfirmedZoneId(PIN_ZONE_ID)
   }
 
   const openDoorways = () => {
@@ -516,9 +628,10 @@ function Doorstep() {
       setDraftClosure((d) => [...d, point])
     } else if (panel === 'dropoff') {
       if (trip) return // tapping the map mid-trip shouldn't cancel navigation
-      if (arrivalDestination && arrival.moving) { arrival.moveTo(point); return }
+      if (arrivalDestination && arrival.moving) { movePin(point); return }
       clearSelection()
       setArrivalDestination({ name: placeId ? 'Selected place' : 'Selected location', location: point, placeId })
+      arrival.start()
       setExpanded(true)
     }
   }
@@ -575,9 +688,27 @@ function Doorstep() {
         zones={zones}
         closures={closureStore.closures}
         destination={panel === 'dropoff' || panel === 'mark' ? mapDestination : undefined}
-        arrivalStop={panel === 'dropoff' && arrivalDestination ? arrival.option?.stopPoint ?? arrival.draft : undefined}
         movingArrival={arrival.moving}
-        onMoveArrival={arrival.moveTo}
+        dropPin={(() => {
+          if (panel !== 'dropoff' || walking) return undefined
+          const at = arrivalDestination ? arrival.option?.stopPoint ?? arrival.draft : activeOption?.zone.stopPoint
+          return at && { position: at, area: pinArea, onMove: movePin }
+        })()}
+        preview={
+          planId
+            ? {
+                id: planId,
+                route: walking
+                  ? arrivalDestination
+                    ? placeWalk?.path
+                    : walk?.path
+                  : arrivalDestination
+                    ? arrival.option?.drive?.path && [...arrival.option.drive.path, ...arrival.option.walk.path]
+                    : drive?.path && [...drive.path, ...(walk?.path ?? [])],
+                focus: walking ? undefined : arrivalDestination ? arrival.option?.stopPoint : activeOption?.zone.stopPoint,
+              }
+            : undefined
+        }
         selectedZoneId={walking && panel === 'dropoff' ? undefined : activeZoneId}
         focusEntranceId={activeDoor?.entrance.id}
         walkMode={walking && panel === 'dropoff'}
@@ -585,10 +716,12 @@ function Doorstep() {
         editingZoneId={editingZone?.source === 'personal' ? editingZone.id : undefined}
         me={geo.position && { position: geo.position, accuracy: geo.accuracy, heading: geo.heading }}
         drivePath={
-          panel === 'mark' ? road.info?.path : arrivalDestination ? arrival.option?.drive?.path : walking ? undefined : drive?.path
+          panel === 'mark' ? road.info?.path : walking ? undefined : arrivalDestination ? arrival.option?.drive?.path : drive?.path
         }
-        walkPath={panel === 'mark' ? undefined : arrivalDestination ? arrival.option?.walk.path : walk?.path}
-        doorways={panel === 'doors' || layers.grid ? doorMarks : undefined}
+        walkPath={
+          panel === 'mark' ? undefined : arrivalDestination ? (walking ? placeWalk?.path : arrival.option?.walk.path) : walk?.path
+        }
+        doorways={panel === 'doors' || layers.grid || (panel === 'dropoff' && placedHere.length > 0) ? doorMarks : undefined}
         paint={
           panel === 'mark' && destination
             ? {
@@ -688,11 +821,36 @@ function Doorstep() {
           />
         )}
 
-        {!trip && panel === 'dropoff' && arrivalDestination && <ArrivalPanel
+        {!trip && panel === 'dropoff' && (
+          <TripForm
+            mode={mode}
+            onMode={(m) => {
+              setMode(m)
+              setConfirmedZoneId(undefined)
+            }}
+            start={start}
+            destinationLabel={destinationLabel}
+            hasGps={!!geo.position}
+            showExamples={!destination && !arrivalDestination && !searchError}
+            onEnter={planTrip}
+          />
+        )}
+        {!trip && panel === 'dropoff' && pinNote && <Notice>{pinNote}</Notice>}
+        {!trip && panel === 'dropoff' && arrivalDestination && !walking && <ArrivalPanel
           key={`${arrivalDestination.placeId ?? ''}:${arrivalDestination.location.lat},${arrivalDestination.location.lng}:${token ?? ''}`}
           destination={arrivalDestination} state={arrival} token={token} onSignIn={() => setTab('preferences')}
-          kind={mode === 'pickup' ? 'pickup' : 'dropoff'} onKind={setMode} stepFree={stepFree} onStepFree={setStepFreeChoice}
+          stepFree={stepFree} onStepFree={setStepFreeChoice}
         />}
+        {!trip && panel === 'dropoff' && arrivalDestination && walking && (
+          <WalkPlacePanel
+            name={arrivalDestination.name}
+            from={placeFromName}
+            route={placeWalk && { seconds: placeWalk.meters / walkingSpeed(user?.profile), meters: placeWalk.meters }}
+            savedMeters={placeWalk?.savedMeters}
+            error={placeRoute.error}
+            onStart={startPlaceWalk}
+          />
+        )}
         {suggestDropoff && (
           <div className="flex flex-col gap-2.5 rounded-2xl border border-accent/40 bg-accent/10 p-3.5 text-sm">
             <p className="m-0">
@@ -725,20 +883,11 @@ function Doorstep() {
             user={user}
             destination={destination}
             mode={mode}
-            onMode={(m) => {
-              setMode(m)
-              setConfirmedZoneId(undefined)
-            }}
             doors={doors}
             selectedDoorId={activeDoor?.entrance.id}
             onSelectDoor={setSelectedDoorId}
             walkStart={walkStart}
             start={start}
-            onStart={chooseStart}
-            onClearStart={() => {
-              setStart(undefined)
-              setConfirmedZoneId(undefined)
-            }}
             stepFree={stepFree}
             onStepFree={setStepFreeChoice}
             options={options}
@@ -755,8 +904,6 @@ function Doorstep() {
             slope={slope}
             ai={aiTrip}
             aiBusy={aiBusy}
-            onSearch={search}
-            onClear={clearSelection}
             onSignIn={() => setTab('preferences')}
             onFeedback={async (f) => {
               if (!confirmedTripId) throw new Error("Confirm a route while signed in before sending feedback")
@@ -782,7 +929,7 @@ function Doorstep() {
         {!trip && panel === 'mark' && destination && (
           <MarkZonePanel
             buildingName={destination.building.name}
-            verb={mode === 'pickup' ? 'pickup' : 'drop-off'}
+            verb="drop-off"
             strokeCount={strokes.length}
             hasArea={!!paintArea}
             road={{
