@@ -1,4 +1,5 @@
 import { useId, type ReactNode, type SVGProps } from 'react'
+import type { TravelMode } from '../motion'
 
 // One consistent icon set (24×24, rounded 1.8px strokes, currentColor), used
 // instead of emoji so icons match the theme: muted when idle, teal when active.
@@ -209,3 +210,34 @@ export const SlopeIcon = (p: IconProps) => (
     <path d="M14 19.5a3.5 3.5 0 0 0-.9-2.5" />
   </Icon>
 )
+
+// Trip timeline, drop-off spot painting and travel-mode detection
+export const PauseIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M8.5 5.5v13M15.5 5.5v13" />
+  </Icon>
+)
+
+export const PencilIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="m4.5 19.5.8-3.9L15.8 5.1a2 2 0 0 1 2.8 0l.3.3a2 2 0 0 1 0 2.8L8.4 18.7Z" />
+    <path d="m13.8 7.1 3.1 3.1" />
+  </Icon>
+)
+
+export const BikeIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="6" cy="15.5" r="3.5" />
+    <circle cx="18" cy="15.5" r="3.5" />
+    <path d="M6 15.5 10 10h6l2 5.5M6 15.5h5.5L16 10M9.5 8.2l2 7.3M8.3 8.2h2.4M16 10l-.8-2.6h2.3" />
+  </Icon>
+)
+
+/** The travel mode detected from GPS speed (motion.ts). */
+export function TravelModeIcon({ mode, ...p }: IconProps & { mode: TravelMode }) {
+  if (mode === 'walking') return <WalkIcon {...p} />
+  if (mode === 'cycling') return <BikeIcon {...p} />
+  if (mode === 'vehicle') return <CarIcon {...p} />
+  if (mode === 'still') return <PersonIcon {...p} />
+  return <LocateIcon {...p} />
+}

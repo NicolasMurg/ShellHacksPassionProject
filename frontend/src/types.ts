@@ -2,6 +2,9 @@
 
 export type LatLng = { lat: number; lng: number }
 
+/** A point with a readable name, e.g. a typed starting address. */
+export type Place = { location: LatLng; label: string }
+
 /** Whether the car is dropping you off or picking you up. */
 export type TripKind = 'dropoff' | 'pickup'
 

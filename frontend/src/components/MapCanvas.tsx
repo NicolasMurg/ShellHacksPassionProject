@@ -1,10 +1,22 @@
-import { AdvancedMarker, AdvancedMarkerAnchorPoint, Circle, CollisionBehavior, Map, Polygon, Polyline, useMap } from '@vis.gl/react-google-maps'
+import {
+  AdvancedMarker,
+  AdvancedMarkerAnchorPoint,
+  Circle,
+  CollisionBehavior,
+  Map,
+  Polygon,
+  Polyline,
+  RenderingType,
+  useMap,
+} from '@vis.gl/react-google-maps'
 import { useEffect, useId, useRef, useState } from 'react'
 import { CAMPUS_CENTER } from '../data/mapDefaults'
 import { centroid, distanceMeters, splitPath } from '../geo'
 import { MAP_STYLES, type MapLayers } from '../mapLayers'
 import { CarIcon, DoorIcon, WheelchairIcon } from './icons'
 import type { Building, Entrance, LatLng, RoadClosure, Zone } from '../types'
+import { GridLayer } from './GridLayer'
+import { PaintLayer, type Paint } from './PaintLayer'
 
 // Keep in sync with the @theme colors in index.css (the map needs raw hex).
 const COLOR = {
@@ -18,7 +30,15 @@ const COLOR = {
   me: '#4c8dff',
 }
 
-export type Tool = 'none' | 'addZone' | 'drawClosure'
+export type Tool = 'none' | 'addZone' | 'drawClosure' | 'paintZone' | 'placeDoor'
+
+/** Doorways on the grid, and the links (shortcuts through buildings) between them. */
+export type DoorwayMarks = {
+  doors: { id: string; label: string; location: LatLng }[]
+  links: { id: string; a: LatLng; b: LatLng }[]
+  selectedId?: string
+  onSelect: (id: string) => void
+}
 
 type Props = {
   buildings: Building[]
@@ -30,8 +50,8 @@ type Props = {
   /** Walk mode: the chosen door (there's no zone). */
   focusEntranceId?: string
   walkMode: boolean
-  /** Where a walk starts when it isn't your GPS position. */
-  walkStart?: { location: LatLng; label: string }
+  /** Where the trip starts when it isn't your GPS position: a typed address, or the walk demo spot. */
+  start?: { location: LatLng; label: string; typed?: boolean }
   editingZoneId?: string
   editMode: boolean
   tool: Tool
@@ -39,6 +59,9 @@ type Props = {
   me?: { position: LatLng; accuracy?: number; heading?: number }
   drivePath?: LatLng[]
   walkPath?: LatLng[]
+  /** Set while the user colors in their own drop-off spot; the map holds still. */
+  paint?: Paint
+  doorways?: DoorwayMarks
   layers: MapLayers
   /** In-app navigation: the route, how far along you are, and where you are. */
   nav?: { travel: 'DRIVING' | 'WALKING'; path: LatLng[]; traveled: number; position?: LatLng; heading: number }
@@ -59,14 +82,17 @@ export function MapCanvas(props: Props) {
   const { buildings, entrances, zones, closures, destination, selectedZoneId, editingZoneId, editMode, tool, draftClosure, me, layers } = props
   const selected = zones.find((z) => z.id === selectedZoneId)
   const { mapTypeId, colorScheme } = MAP_STYLES[layers.style]
-  const start = useStartCamera(colorScheme)
+  const start = useStartCamera(colorScheme, layers.threeD)
+  useThreeD(layers.threeD)
   const selectedEntranceId = selected?.entranceId ?? props.focusEntranceId
 
   // In walk mode also fit where the walk starts (demo start, or you).
-  const walkOrigin = props.walkMode ? (props.walkStart?.location ?? me?.position) : undefined
+  const walkOrigin = props.walkMode ? (props.start?.location ?? me?.position) : undefined
   const navigating = !!props.nav
   // While navigating the camera follows you (useFollow) instead of framing the destination.
   useFitTo(navigating ? undefined : destination, walkOrigin)
+  // Runs after useFitTo so a new typed address shows the whole trip first.
+  useFitTrip(props.start?.typed && !navigating ? props.start.location : undefined, destination)
   useFollow(props.nav?.position, navigating && props.follow)
   const [navDone, navAhead] = props.nav ? splitPath(props.nav.path, props.nav.traveled) : [[], []]
 
@@ -89,12 +115,16 @@ export function MapCanvas(props: Props) {
       mapId={MAP_ID}
       colorScheme={colorScheme}
       mapTypeId={mapTypeId}
+      // Tilt and rotation only work on the vector map (maps made from JS default to raster).
+      renderingType={RenderingType.VECTOR}
       defaultCenter={start.center}
       defaultZoom={start.zoom}
-      // Flat 2D map: no tilting or rotating.
-      tiltInteractionEnabled={false}
-      headingInteractionEnabled={false}
-      gestureHandling="greedy"
+      defaultTilt={start.tilt}
+      defaultHeading={start.heading}
+      // 2D: flat and north-up. 3D: tilt and rotate with Shift + drag or two fingers.
+      tiltInteractionEnabled={layers.threeD}
+      headingInteractionEnabled={layers.threeD}
+      gestureHandling={props.paint ? 'none' : 'greedy'}
       disableDefaultUI
       clickableIcons={!editMode && tool === 'none' && !props.movingArrival}
       draggableCursor={tool === 'none' && !props.movingArrival ? undefined : 'crosshair'}
@@ -106,6 +136,43 @@ export function MapCanvas(props: Props) {
     >
       {layers.traffic && <Overlay kind="traffic" />}
       {layers.transit && <Overlay kind="transit" />}
+      {(layers.grid || tool === 'placeDoor') && <GridLayer light={colorScheme === 'LIGHT'} />}
+
+      {/* Doorway links: dashed shortcuts through buildings. */}
+      {props.doorways?.links.map((l) => (
+        <Polyline
+          key={l.id}
+          path={[l.a, l.b]}
+          strokeOpacity={0}
+          clickable={false}
+          zIndex={40}
+          icons={[
+            {
+              icon: { path: 'M 0,-1 0,1', strokeOpacity: 1, strokeColor: COLOR.selected, strokeWeight: 4, scale: 3 },
+              offset: '0',
+              repeat: '12px',
+            },
+          ]}
+        />
+      ))}
+      {props.doorways?.doors.map((d) => {
+        const chosen = d.id === props.doorways?.selectedId
+        return (
+          <AdvancedMarker
+            key={d.id}
+            position={d.location}
+            zIndex={chosen ? 66 : 65}
+            title={d.label}
+            anchorPoint={AdvancedMarkerAnchorPoint.CENTER}
+            onClick={() => props.doorways?.onSelect(d.id)}
+          >
+            <div className="pin-door" style={chosen ? { borderColor: COLOR.selected, background: COLOR.selected, color: '#04201e' } : undefined}>
+              <DoorIcon size={17} />
+            </div>
+          </AdvancedMarker>
+        )
+      })}
+      {props.paint && <PaintLayer {...props.paint} />}
 
       {!destination &&
         !editMode &&
@@ -223,9 +290,8 @@ export function MapCanvas(props: Props) {
         </>
       )}
 
-      {props.walkStart && !navigating && (
-        <AdvancedMarker position={props.walkStart.location} zIndex={55} title={`Walk starts at ${props.walkStart.label}`}>
-          <div className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-1 text-[11px] font-bold shadow-[var(--shadow-float)]">
+      {props.start && !navigating && !editMode && (
+        <AdvancedMarker position={props.start.location} zIndex={55} title={`Trip starts at ${props.start.label}`}>          <div className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-1 text-[11px] font-bold shadow-[var(--shadow-float)]">
             <span aria-hidden className="size-2.5 rounded-full bg-[#4c8dff]" />
             Start
           </div>
@@ -397,17 +463,34 @@ function Overlay({ kind }: { kind: 'traffic' | 'transit' }) {
  * Where a new map instance should open. Changing the color scheme makes the
  * library build a new map, so it starts where the old one was, not at campus center.
  */
-function useStartCamera(colorScheme: string) {
+function useStartCamera(colorScheme: string, threeD: boolean) {
   const map = useMap()
-  const [start, setStart] = useState({ colorScheme, center: CAMPUS_CENTER, zoom: 17 })
+  const [start, setStart] = useState({ colorScheme, center: CAMPUS_CENTER, zoom: 17, tilt: threeD ? TILT_3D : 0, heading: 0 })
   if (start.colorScheme !== colorScheme) {
     setStart({
       colorScheme,
       center: map?.getCenter()?.toJSON() ?? start.center,
       zoom: map?.getZoom() ?? start.zoom,
+      tilt: map?.getTilt() ?? start.tilt,
+      heading: map?.getHeading() ?? start.heading,
     })
   }
   return start
+}
+
+const TILT_3D = 60
+
+/** Tilts the camera when 3D view is switched on, and flattens it (north up) when switched off. */
+function useThreeD(on: boolean) {
+  const map = useMap()
+  // A new map instance already opens at the right angle (see useStartCamera); only react to toggles.
+  const applied = useRef(on)
+
+  useEffect(() => {
+    if (!map || applied.current === on) return
+    applied.current = on
+    map.moveCamera(on ? { tilt: TILT_3D } : { tilt: 0, heading: 0 })
+  }, [map, on])
 }
 
 const MAX_FIT_ZOOM = 18
@@ -500,6 +583,32 @@ function offsetForPanel(map: google.maps.Map, p: LatLng): LatLng {
   if (!world) return p
   const center = projection.fromPointToLatLng(new google.maps.Point(world.x + dx / scale, world.y + dy / scale))
   return center ? center.toJSON() : p
+}
+
+/**
+ * When a new starting address is typed, show the whole trip from there to the destination once.
+ * Typing a new destination later zooms to that building instead (useFitTo).
+ */
+function useFitTrip(start?: LatLng, destination?: Building) {
+  const map = useMap()
+  const key = start ? `${start.lat},${start.lng}` : undefined
+  const fittedFor = useRef<string>(undefined)
+  const destinationId = destination?.id
+
+  useEffect(() => {
+    if (!map || !key || !start || !destination) return
+    // Already shown for this address, or a rebuilt map (after a light/dark switch) that opens at the old view.
+    if (fittedFor.current === key) return
+    fittedFor.current = key
+    const bounds = new google.maps.LatLngBounds()
+    bounds.extend(start)
+    bounds.extend(destination.location)
+    map.fitBounds(bounds, mapPadding())
+    const listener = google.maps.event.addListenerOnce(map, 'idle', () => {
+      if ((map.getZoom() ?? 0) > MAX_FIT_ZOOM) map.setZoom(MAX_FIT_ZOOM)
+    })
+    return () => listener.remove()
+  }, [map, key, destinationId]) // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 /** Leave room for the panel so fitted content isn't hidden behind it. */

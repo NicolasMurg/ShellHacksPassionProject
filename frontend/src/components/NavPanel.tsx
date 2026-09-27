@@ -1,10 +1,11 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type ComponentProps } from 'react'
 import { formatDistance } from '../geo'
 import type { Navigation, NavLeg } from '../state/navigation'
 import type { LatLng } from '../types'
 import { cx } from './cx'
 import { CarIcon, DoorIcon, LocateIcon, PlayIcon, SpeakerIcon, WalkIcon } from './icons'
 import { StreetViewPreview } from './StreetViewPreview'
+import { TripTimeline } from './TripTimeline'
 import { Button, Switch } from './ui'
 
 // Arrows for Google's maneuver ids.
@@ -76,6 +77,8 @@ type PanelProps = {
   doorLocation?: LatLng
   simulate: boolean
   onSimulate: (v: boolean) => void
+  /** Simulated trips only: the scrubbable, video-style timeline of the whole ride. */
+  timeline?: ComponentProps<typeof TripTimeline>
   voice: boolean
   onVoice: (v: boolean) => void
   following: boolean
@@ -105,6 +108,7 @@ export function NavPanel(p: PanelProps) {
           </div>
         </div>
         {p.doorLocation && <StreetViewPreview target={p.doorLocation} />}
+        {p.timeline && <TripTimeline {...p.timeline} />}
         <Button variant="primary" className="h-12" onClick={p.onEnd}>
           Done
         </Button>
@@ -143,6 +147,8 @@ export function NavPanel(p: PanelProps) {
         </ol>
       )}
 
+      {p.timeline && <TripTimeline {...p.timeline} />}
+
       {!nav || nav.status === 'routing' ? (
         <p className="m-0 text-sm text-muted">Finding the route…</p>
       ) : nav.status === 'error' ? (
@@ -160,12 +166,14 @@ export function NavPanel(p: PanelProps) {
             <Stat label="Distance" value={formatDistance(nav.remainingMeters)} />
             <Stat label="Arrive" value={clock(nav.remainingSeconds)} />
           </div>
-          <div aria-hidden className="h-1.5 overflow-hidden rounded-full bg-high">
-            <div
-              className="h-full rounded-full bg-accent transition-[width] duration-300"
-              style={{ width: `${Math.round((nav.traveled / Math.max(1, nav.traveled + nav.remainingMeters)) * 100)}%` }}
-            />
-          </div>
+          {!p.timeline && (
+            <div aria-hidden className="h-1.5 overflow-hidden rounded-full bg-high">
+              <div
+                className="h-full rounded-full bg-accent transition-[width] duration-300"
+                style={{ width: `${Math.round((nav.traveled / Math.max(1, nav.traveled + nav.remainingMeters)) * 100)}%` }}
+              />
+            </div>
+          )}
           {nav.upcoming.length > 0 && (
             <section>
               <h2 className="m-0 mb-2 text-xs font-bold text-muted">Then</h2>
