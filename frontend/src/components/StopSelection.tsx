@@ -30,7 +30,7 @@ export function StopOptionCard({ option, rank, selected, kind, onSelect, onConfi
     <button type="button" aria-expanded={selected} aria-controls={selected ? detailsId : undefined} onClick={onSelect}
       className="block w-full px-4 py-3.5 text-left focus-visible:outline-2 focus-visible:outline-accent">
       <span className="flex items-start justify-between gap-3 text-xs font-bold">
-        <span className={selected ? 'text-selected' : 'text-muted'}>{rank === 0 ? 'Best' : `Option ${rank + 1}`}</span>
+        <span className={selected ? 'text-selected' : 'text-muted'}>{rank < 0 ? 'Your pin' : rank === 0 ? 'Best' : `Option ${rank + 1}`}</span>
         <span className="shrink-0">{formatWalk(option.walkSeconds)}</span>
       </span>
       <span className="mt-1.5 block text-base font-bold tracking-tight">{option.name}</span>

@@ -2,6 +2,7 @@ import { useMapsLibrary } from '@vis.gl/react-google-maps'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { bearing, distanceMeters, pointAlong, projectOnPath } from '../geo'
 import type { LatLng } from '../types'
+import { throughDoorways } from '../doorShortcuts'
 import { inCampus, routeWalk } from '../walkRouter'
 import { useCampusGraph } from './routing'
 
@@ -127,7 +128,11 @@ export function useNavigation(opts: {
         const before = along
         add(leg.to)
         if (along > before && steps.length) steps[steps.length - 1].endAlong = along
-        const route = { key: routeKey, path, steps, meters: along, seconds: gLeg.duration?.value ?? along / walkSpeedMps }
+        // A walk that crosses campus still cuts through linked doorways when that's shorter.
+        const doors = leg.travel === 'WALKING' && graph ? throughDoorways(graph, path, along, !!stepFree, steps) : undefined
+        const route = doors
+          ? { key: routeKey, path: doors.path, steps: doors.steps, meters: doors.meters, seconds: doors.meters / walkSpeedMps }
+          : { key: routeKey, path, steps, meters: along, seconds: gLeg.duration?.value ?? along / walkSpeedMps }
         setFetched((f) => ({ ...f, [routeKey]: route }))
       })
       .catch((err: Error) => !cancelled && setFailed({ key: routeKey, message: err.message || 'No route found' }))

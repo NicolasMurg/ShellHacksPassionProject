@@ -1,15 +1,14 @@
 import { useState } from 'react'
 import * as api from '../api'
 import type { User } from '../types'
-import { DestinationControls, type SearchControls } from './DestinationControls'
 import { StopOptionCard, StopConfirmation, type StopChoice } from './StopSelection'
 import type { ArrivalState } from '../state/arrivals'
-import { Button, Field, inputClass, Notice } from './ui'
+import { Button, Field, inputClass, Notice, Switch } from './ui'
 
-export function ArrivalPanel({ destination, state, token, onSignIn, kind, onKind, stepFree, onStepFree, user, onPropose, ...search }: SearchControls & {
+export function ArrivalPanel({ destination, state, token, onSignIn, kind, stepFree, onStepFree, onPropose }: {
   onPropose: (input: api.PublicStopInput) => void;
   user?: User; destination: api.ArrivalDestination; state: ArrivalState; token?: string; onSignIn: () => void;
-  kind: 'dropoff' | 'pickup'; onKind: (kind: 'dropoff' | 'pickup') => void; stepFree: boolean; onStepFree: (v: boolean) => void
+  kind: 'dropoff' | 'pickup'; stepFree: boolean; onStepFree: (v: boolean) => void
 }) {
   const [name, setName] = useState<string>()
   const [instructions, setInstructions] = useState<string>()
@@ -36,8 +35,7 @@ export function ArrivalPanel({ destination, state, token, onSignIn, kind, onKind
     personal: value.source === 'saved', drive: value.drive && { seconds: value.drive.seconds, fromGps: true },
   })
   return <>
-    <DestinationControls {...search} user={user} mode={kind} onMode={mode => { if (mode !== 'walk') onKind(mode) }}
-      stepFree={stepFree} onStepFree={onStepFree} onSignIn={onSignIn} destinationName={destination.name} />
+<Switch checked={stepFree} onChange={onStepFree} label="Prefer step-free access" />
     {state.loading && <Notice>Finding pickup and drop-off options…</Notice>}
     {(state.error || error) && <Notice tone="error">{state.error ?? error}</Notice>}
     {message && <Notice tone="success">{message}</Notice>}
@@ -46,7 +44,7 @@ export function ArrivalPanel({ destination, state, token, onSignIn, kind, onKind
       <Button onClick={state.moving ? state.cancelMove : state.move}>{state.moving ? 'Cancel moving' : 'Move pin'}</Button>
       <Button onClick={state.suggest} disabled={state.loading}>Refresh suggestions</Button>
     </div>}
-    {state.moving && <Notice>Tap the map or drag the orange stop pin to choose a point within 500 m of the destination. We’ll check its route before you confirm.</Notice>}
+    {state.moving && <Notice>Tap the map or drag the orange stop pin to choose a point within 100 m of the destination. We’ll check its route before you confirm.</Notice>}
     {option && state.confirmed ? <StopConfirmation option={choice(option)} kind={kind} onChange={state.change}>
       {option.source !== 'public' && <Button onClick={() => propose(option)}>Propose as public zone</Button>}
       {!publicStop && (token ? <>

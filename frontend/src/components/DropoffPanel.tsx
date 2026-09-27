@@ -1,26 +1,24 @@
-import { useState, type FormEvent } from 'react'
-import { DestinationControls } from './DestinationControls'
+import { useState } from 'react'
 import { StopOptionCard, StopConfirmation, type StopChoice } from './StopSelection'
 import { formatWalk } from '../geo'
 import type { Destination } from '../search'
 import type { DoorOption, Place, StopOption, TravelMode, TripKind, User } from '../types'
+import { PIN_REACH_M, PIN_ZONE_ID } from '../dropPin'
+import { walkingSpeed } from '../walking'
 import { StreetViewPreview } from './StreetViewPreview'
 import { cx } from './cx'
 import { DoorIcon, LocateIcon, PencilIcon, SparkleIcon, WheelchairIcon } from './icons'
 import { ArriveBy, CurbCheck, SavedBadge, SlopeBadge, TripChips, WeatherNotice } from './Insights'
-import { Button, Notice } from './ui'
+import { Button, Notice, Switch } from './ui'
 import type { TripParse } from '../api'
 import type { Slope, Weather } from '../state/insights'
 
-const QUICK_PICKS = ['GC 150', 'Green Library 420', 'CASE 241', 'PC 110']
-const AI_EXAMPLE = "Drop me at Graham Center by the food court at 9, I'm on crutches"
 
 type Props = {
   onPropose: (zone: StopOption["zone"]) => void
   user?: User
   destination?: Destination
   mode: TravelMode
-  onMode: (m: TravelMode) => void
   /** Walk mode: ranked doors, and where the walk starts. */
   doors: DoorOption[]
   selectedDoorId?: string
@@ -31,8 +29,6 @@ type Props = {
   onStartTrip: () => void
   /** A typed starting address (any address); trips then start there. */
   start?: Place
-  onStart: (address: string) => Promise<void>
-  onClearStart: () => void
   stepFree: boolean
   onStepFree: (v: boolean) => void
   options: StopOption[]
@@ -40,10 +36,6 @@ type Props = {
   onSelect: (zoneId: string) => void
   confirmedZoneId?: string
   onConfirm: (zoneId?: string) => void
-  searchText: string
-  onSearchTextChange: (text: string) => void
-  onSearch: (text: string) => void
-  onClear: () => void
   onSignIn: () => void
   onFeedback: (f: 'faster' | 'right' | 'slower') => Promise<void>
   error?: string
@@ -53,7 +45,7 @@ type Props = {
   feedbackSent?: boolean
   /** Your GPS-measured walking pace this trip (walking stretches only), and the answer it points to. */
   measuredWalk?: { speed: number; suggestion: 'faster' | 'right' | 'slower' }
-  /** Start coloring in your own drop-off/pickup spot for the destination. */
+  /** Start coloring in your own drop-off spot for the destination. */
   onMarkZone: () => void
   /** Walking saved per zone id, vs. where ride apps stop for the address pin. */
   saved?: Map<string, number>
@@ -69,19 +61,32 @@ type Props = {
 export function DropoffPanel(p: Props) {
   const walking = p.mode === 'walk'
   const kind: TripKind = p.mode === 'pickup' ? 'pickup' : 'dropoff'
-  const verb = kind === 'dropoff' ? 'drop-off' : 'pickup'
+  const verb = kind === 'pickup' ? 'pickup' : 'drop-off'
   const confirmed = walking ? undefined : p.options.find((o) => o.zone.id === p.confirmedZoneId)
 
   return (
     <>
-      <DestinationControls
-        user={p.user} mode={p.mode} onMode={p.onMode} allowWalking
-        searchText={p.searchText} onSearchTextChange={p.onSearchTextChange} onSearch={p.onSearch} onClear={p.onClear}
-        stepFree={p.stepFree} onStepFree={p.onStepFree} onSignIn={p.onSignIn}
-        destinationName={p.destination?.building.name} room={p.destination?.room}
-      />
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Switch
+          checked={p.stepFree}
+          onChange={p.onStepFree}
+          label={
+            <span className="flex items-center gap-1.5">
+              <WheelchairIcon size={18} className="text-accent" /> Step-free only
+            </span>
+          }
+        />
+        {p.user ? (
+          <span className="text-xs text-muted">
+            Your pace: {walkingSpeed(p.user.profile).toFixed(2)} m/s
+          </span>
+        ) : (
+          <button type="button" onClick={p.onSignIn} className="text-xs font-semibold text-accent hover:underline">
+            Sign in for personal walk times
+          </button>
+        )}
+      </div>
 
-      <StartField start={p.start} onStart={p.onStart} onClear={p.onClearStart} />
       {p.aiBusy && (
         <p className="m-0 flex items-center gap-1.5 text-sm font-semibold text-accent">
           <SparkleIcon size={16} className="motion-safe:animate-pulse" /> Gemini is reading your request…
@@ -91,37 +96,20 @@ export function DropoffPanel(p: Props) {
 
       {p.error && <Notice tone="error">{p.error}</Notice>}
 
-      {!p.destination && !p.error && <p className="m-0 text-sm text-muted">Search an address or tap a house or business on the map to choose an arrival point.</p>}
-
-      {!p.destination && !p.error && (
-        <div>
-          <p className="mb-2 mt-0 text-sm font-semibold text-muted">Try</p>
-          <div className="flex flex-wrap gap-2">
-            {QUICK_PICKS.map((q) => (
-              <button
-                key={q}
-                type="button"
-                onClick={() => {
-                  p.onSearchTextChange(q)
-                  p.onSearch(q)
-                }}
-                className="h-10 rounded-full border border-line bg-raised px-3.5 font-semibold hover:border-accent"
-              >
-                {q}
-              </button>
-            ))}
-            <button
-              type="button"
-              onClick={() => {
-                p.onSearchTextChange(AI_EXAMPLE)
-                p.onSearch(AI_EXAMPLE)
-              }}
-              className="flex min-h-10 items-center gap-1.5 rounded-full border border-accent/40 bg-accent/10 px-3.5 py-1.5 text-left text-sm font-semibold text-accent hover:border-accent"
-            >
-              <SparkleIcon size={16} className="shrink-0" /> “{AI_EXAMPLE}”
-            </button>
-          </div>
+      {p.destination && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-base font-bold">{p.destination.building.name}</span>
+          {p.destination.room && (
+            <span className="rounded-full bg-accent/15 px-2.5 py-0.5 text-xs font-bold text-accent">Rm {p.destination.room}</span>
+          )}
         </div>
+      )}
+
+      {p.destination && !walking && !confirmed && p.options.length > 0 && (
+        <p className="m-0 text-xs text-muted">
+          Drag the car pin on the map to exactly where you want to be dropped off, anywhere within {PIN_REACH_M} m of the building.
+          The route follows it.
+        </p>
       )}
 
       {p.destination && !walking && (
@@ -187,7 +175,7 @@ export function DropoffPanel(p: Props) {
               <StopOptionCard
                 key={o.zone.id}
                 option={stopChoice(o, o.zone.id === p.selectedZoneId ? p.drive : undefined)}
-                rank={i}
+                rank={p.options[0]?.zone.id === PIN_ZONE_ID ? i - 1 : i}
                 selected={o.zone.id === p.selectedZoneId}
                 kind={kind}
                 onSelect={() => p.onSelect(o.zone.id)}
@@ -205,75 +193,6 @@ export function DropoffPanel(p: Props) {
       )}
       {confirmed?.zone.source === 'generated' && <Button onClick={() => p.onPropose(confirmed.zone)}>Propose as public zone</Button>}
     </>
-  )
-}
-
-/** "From" field: type any address to start the trip there. Empty = your GPS (or the campus gate). */
-function StartField({ start, onStart, onClear }: { start?: Place; onStart: (address: string) => Promise<void>; onClear: () => void }) {
-  const [text, setText] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string>()
-
-  if (start) {
-    return (
-      <div className="flex h-13 items-center gap-2 rounded-full border border-line bg-raised pl-4 pr-1.5">
-        <span className="text-xs font-bold text-muted">From</span>
-        <span className="min-w-0 flex-1 truncate font-medium" title={start.label}>
-          {start.label}
-        </span>
-        <button
-          type="button"
-          aria-label="Clear starting address"
-          onClick={() => {
-            setText('')
-            onClear()
-          }}
-          className="size-8 rounded-full text-xl text-muted hover:text-fg"
-        >
-          ×
-        </button>
-      </div>
-    )
-  }
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault()
-    if (!text.trim()) return
-    setBusy(true)
-    setError(undefined)
-    try {
-      await onStart(text.trim())
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div className="flex flex-col gap-2">
-      <form onSubmit={submit} className="flex h-13 items-center gap-1.5 rounded-full border border-line bg-raised pl-4 pr-1.5 focus-within:border-accent">
-        <span className="text-xs font-bold text-muted">From</span>
-        <input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="Any address, e.g. Dolphin Mall"
-          aria-label="Starting address"
-          enterKeyHint="go"
-          autoComplete="street-address"
-          className="h-full min-w-0 flex-1 bg-transparent font-medium placeholder:text-muted focus:outline-none"
-        />
-        <button
-          type="submit"
-          disabled={!text.trim() || busy}
-          aria-label="Start from this address"
-          className="grid size-11 place-items-center rounded-full bg-accent text-lg font-black text-accent-ink disabled:bg-high disabled:text-muted"
-        >
-          {busy ? '…' : '→'}
-        </button>
-      </form>
-      {error && <Notice tone="error">{error}</Notice>}
-    </div>
   )
 }
 
@@ -366,8 +285,8 @@ function Confirmed({
 }: {
   arriveBy?: string
   slope?: Slope
-  option: StopOption
   kind: TripKind
+  option: StopOption
   user?: User
   drive?: Props['drive']
   onChange: () => void

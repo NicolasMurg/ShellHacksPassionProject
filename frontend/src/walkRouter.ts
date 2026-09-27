@@ -208,6 +208,31 @@ export function withShortcuts(g: Graph, shortcuts: { a: LatLng; b: LatLng }[]): 
 
 type Snap = { edge: number; t: number; x: number; y: number; off: number }
 
+/** How far inside a linked-door circle counts as inside the building (the doors sit on its edge). */
+const DOOR_EDGE_M = 2
+
+/**
+ * Linked doors whose circle holds `p`: the line between two linked doors, spun around its middle.
+ * Starting inside one, you're in that building, so the walk goes out through one of its doors
+ * (whichever makes the whole walk shortest) instead of cutting to the nearest path.
+ */
+function doorsAround(g: Graph, p: LatLng): { node: number; edge: number }[] {
+  const { x, y } = toXY(p)
+  const doors: { node: number; edge: number }[] = []
+  for (let e = 0; e < g.ea.length; e++) {
+    if (g.kind[e] !== 'indoor') continue
+    const a = g.ea[e]
+    const b = g.eb[e]
+    // The doors themselves sit on the circle's edge: standing at one isn't being inside.
+    const inside = Math.hypot(x - (g.x[a] + g.x[b]) / 2, y - (g.y[a] + g.y[b]) / 2) < g.len[e] / 2 - DOOR_EDGE_M
+    if (inside) doors.push({ node: a, edge: e }, { node: b, edge: e })
+  }
+  return doors
+}
+
+/** Whether `p` is inside a linked-door circle (see doorsAround). */
+export const insideDoorCircle = (g: Graph, p: LatLng) => doorsAround(g, p).length > 0
+
 /** Nearest usable path segment to a point. */
 function snap(g: Graph, p: LatLng, stepFree: boolean): Snap | undefined {
   const { x, y } = toXY(p)
@@ -293,9 +318,12 @@ export function routeWalk(g: Graph, from: LatLng, to: LatLng, opts: { stepFree?:
 }
 
 function search(g: Graph, from: LatLng, to: LatLng, stepFree: boolean): WalkRoute | undefined {
-  const s = snap(g, from, stepFree)
+  // Inside a linked-door circle the walk starts out through one of its doors; otherwise from the nearest path.
+  const exits = doorsAround(g, from)
+  const s = exits.length ? undefined : snap(g, from, stepFree)
   const t = snap(g, to, stepFree)
-  if (!s || !t) return undefined
+  if ((!s && !exits.length) || !t) return undefined
+  const f = toXY(from)
 
   const S = g.n // virtual start node (the snapped start point)
   const T = g.n + 1 // virtual end node
@@ -324,10 +352,14 @@ function search(g: Graph, from: LatLng, to: LatLng, stepFree: boolean): WalkRout
     const u = heap.pop()
     if (u === T) break
     if (u === S) {
-      const e = s.edge
-      relax(S, g.ea[e], cost(e, s.t * g.len[e]), e)
-      relax(S, g.eb[e], cost(e, (1 - s.t) * g.len[e]), e)
-      if (e === t.edge) relax(S, T, cost(e, Math.abs(s.t - t.t) * g.len[e]), e)
+      if (s) {
+        const e = s.edge
+        relax(S, g.ea[e], cost(e, s.t * g.len[e]), e)
+        relax(S, g.eb[e], cost(e, (1 - s.t) * g.len[e]), e)
+        if (e === t.edge) relax(S, T, cost(e, Math.abs(s.t - t.t) * g.len[e]), e)
+      } else {
+        for (const d of exits) relax(S, d.node, cost(d.edge, Math.hypot(g.x[d.node] - f.x, g.y[d.node] - f.y)), d.edge)
+      }
       continue
     }
     if (u === g.ea[t.edge]) relax(u, T, cost(t.edge, t.t * g.len[t.edge]), t.edge)
@@ -344,12 +376,12 @@ function search(g: Graph, from: LatLng, to: LatLng, stepFree: boolean): WalkRout
   for (let v = T; v !== -1; v = prev[v]) chain.push(v)
   chain.reverse()
   const pts: { p: LatLng; edge: number }[] = [] // edge = the segment arriving at this point
-  const pointOf = (v: number) => (v === S ? toLatLng(s.x, s.y) : v === T ? toLatLng(t.x, t.y) : { lat: g.lat[v], lng: g.lng[v] })
+  const pointOf = (v: number) => (v === S ? (s ? toLatLng(s.x, s.y) : from) : v === T ? toLatLng(t.x, t.y) : { lat: g.lat[v], lng: g.lng[v] })
   pts.push({ p: from, edge: -1 })
   for (const v of chain) pts.push({ p: pointOf(v), edge: v === S ? -1 : prevEdge[v] })
   pts.push({ p: to, edge: -1 })
 
-  return withDirections(g, pts)
+  return withDirections(g, pts, !s)
 }
 
 const COMPASS = ['north', 'northeast', 'east', 'southeast', 'south', 'southwest', 'west', 'northwest']
@@ -358,8 +390,8 @@ function bearingXY(a: { x: number; y: number }, b: { x: number; y: number }) {
   return ((Math.atan2(b.x - a.x, b.y - a.y) * 180) / Math.PI + 360) % 360
 }
 
-/** Turn the raw point chain into a clean path plus turn-by-turn steps. */
-function withDirections(g: Graph, raw: { p: LatLng; edge: number }[]): WalkRoute {
+/** Turn the raw point chain into a clean path plus turn-by-turn steps. `leavesBuilding`: it starts inside one. */
+function withDirections(g: Graph, raw: { p: LatLng; edge: number }[], leavesBuilding = false): WalkRoute {
   // Drop duplicate points (e.g. a snap point right on a node).
   const pts: { p: LatLng; xy: { x: number; y: number }; edge: number; along: number }[] = []
   for (const r of raw) {
@@ -398,7 +430,13 @@ function withDirections(g: Graph, raw: { p: LatLng; edge: number }[]): WalkRoute
     {
       along: 0,
       instruction: `Head ${COMPASS[Math.round(startBearing / 45) % 8]}${
-        startsIndoors ? ' through the building (doorway shortcut)' : firstName ? ` on ${firstName}` : ''
+        leavesBuilding
+          ? ' to the door and out of the building'
+          : startsIndoors
+            ? ' through the building (doorway shortcut)'
+            : firstName
+              ? ` on ${firstName}`
+              : ''
       }`,
       maneuver: 'straight',
     },

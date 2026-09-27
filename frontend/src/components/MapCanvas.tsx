@@ -13,6 +13,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { PublicStopPin } from './PublicStopPin'
 import { CAMPUS_CENTER } from '../data/mapDefaults'
 import { centroid, distanceMeters, splitPath } from '../geo'
+import { doorCircle } from '../doorShortcuts'
 import { MAP_STYLES, type MapLayers } from '../mapLayers'
 import { CarIcon, DoorIcon, WheelchairIcon } from './icons'
 import type { PublicStop } from '../api'
@@ -79,9 +80,11 @@ type Props = {
   nav?: { travel: 'DRIVING' | 'WALKING'; path: LatLng[]; traveled: number; position?: LatLng; heading: number }
   follow: boolean
   onUserPan: () => void
-  arrivalStop?: LatLng
+  /** Your drop-off pin: drag it anywhere inside `area` (within 100 m of the building). */
+  dropPin?: { position: LatLng; area: LatLng[]; onMove: (point: LatLng) => void }
+  /** After Enter: show this route once, then bring the camera in to `focus` (the drop-off). */
+  preview?: { id: number; route?: LatLng[]; focus?: LatLng }
   movingArrival?: boolean
-  onMoveArrival: (point: LatLng) => void
   onMapClick: (point: LatLng, placeId?: string) => void
   onSelectZone: (zone: Zone) => void
   onSelectBuilding: (b: Building) => void
@@ -101,13 +104,12 @@ export function MapCanvas(props: Props) {
   // In walk mode also fit where the walk starts (demo start, or you).
   const walkOrigin = props.walkMode ? (props.start?.location ?? me?.position) : undefined
   const publicMarkers = [...props.publicStops, ...props.nearbyPublicStops.filter(stop => !props.publicStops.some(s => s.id === stop.id))]
-  const activePublicStop = publicMarkers.find(stop => stop.id === props.activePublicStopId)
   const selectedPublicStop = props.publicStops.find(stop => stop.id === props.selectedPublicStopId)
   const navigating = !!props.nav
   // While navigating the camera follows you (useFollow) instead of framing the destination.
   useFitTo(navigating ? undefined : selectedPublicStop ? { ...selectedPublicStop, code: '', entrances: [] } : destination, walkOrigin)
-  // Runs after useFitTo so a new typed address shows the whole trip first.
-  useFitTrip(props.start?.typed && !navigating ? props.start.location : undefined, destination)
+  // Runs after useFitTo: after Enter, the whole route, then in to the drop-off.
+  useRoutePreview(navigating ? undefined : props.preview)
   useFollow(props.nav?.position, navigating && props.follow)
   const [navDone, navAhead] = props.nav ? splitPath(props.nav.path, props.nav.traveled) : [[], []]
 
@@ -153,6 +155,20 @@ export function MapCanvas(props: Props) {
       {(layers.grid || tool === 'placeDoor') && <GridLayer light={colorScheme === 'LIGHT'} />}
 
       {/* Doorway links: dashed shortcuts through buildings. */}
+      {/* Inside a pair's circle, walks start out through one of its doors. */}
+      {props.doorways?.links.map((l) => (
+        <Polygon
+          key={`circle-${l.id}`}
+          paths={doorCircle(l.a, l.b)}
+          strokeColor={COLOR.selected}
+          strokeOpacity={0.55}
+          strokeWeight={1.5}
+          fillColor={COLOR.selected}
+          fillOpacity={0.06}
+          clickable={false}
+          zIndex={1}
+        />
+      ))}
       {props.doorways?.links.map((l) => (
         <Polyline
           key={l.id}
@@ -247,11 +263,7 @@ export function MapCanvas(props: Props) {
         </>
       )}
 
-      {props.arrivalStop && !editMode && !navigating && (!activePublicStop || props.movingArrival || distanceMeters(activePublicStop.location, props.arrivalStop) > 8) && <AdvancedMarker position={props.arrivalStop} zIndex={50}
-        draggable={props.movingArrival} title={props.movingArrival ? 'Drag to move the stop' : 'Suggested stopping point'}
-        onDragEnd={e => { const p = e.latLng?.toJSON(); if (p) props.onMoveArrival(p) }}>
-        <div className="pin-stop" style={{ borderColor: COLOR.selected, background: COLOR.selected, color: '#04201e' }}><CarIcon size={20} /></div>
-      </AdvancedMarker>}
+      {props.dropPin && !editMode && !navigating && <DropPin {...props.dropPin} />}
 
       {!editMode && props.learnedPaths.map(({ trace, walks }) => (
         <Polyline key={trace.id} path={trace.points} strokeColor={walks >= 2 ? '#a78bfa' : '#60a5fa'}
@@ -624,30 +636,97 @@ function offsetForPanel(map: google.maps.Map, p: LatLng): LatLng {
   return center ? center.toJSON() : p
 }
 
+const PIN_ZOOM = 18
+
 /**
- * When a new starting address is typed, show the whole trip from there to the destination once.
- * Typing a new destination later zooms to that building instead (useFitTo).
+ * After Enter: show the whole route once, then bring the camera in to the drop-off so the pin is
+ * easy to move. Dragging the map in between keeps your view. Later route changes (a moved pin,
+ * GPS updates) don't move the camera.
  */
-function useFitTrip(start?: LatLng, destination?: Building) {
+function useRoutePreview(preview?: { id: number; route?: LatLng[]; focus?: LatLng }) {
   const map = useMap()
-  const key = start ? `${start.lat},${start.lng}` : undefined
-  const fittedFor = useRef<string>(undefined)
-  const destinationId = destination?.id
+  const shown = useRef<number>(undefined)
+  const pending = useRef<{ timer: number; drag: google.maps.MapsEventListener }>(undefined)
+  const id = preview?.id
+  const ready = !!preview?.route?.length
+
+  useEffect(
+    () => () => {
+      if (pending.current) {
+        clearTimeout(pending.current.timer)
+        pending.current.drag.remove()
+      }
+    },
+    [],
+  )
 
   useEffect(() => {
-    if (!map || !key || !start || !destination) return
-    // Already shown for this address, or a rebuilt map (after a light/dark switch) that opens at the old view.
-    if (fittedFor.current === key) return
-    fittedFor.current = key
+    if (!map || id === undefined || !ready || !preview?.route || shown.current === id) return
+    shown.current = id
+    if (pending.current) {
+      clearTimeout(pending.current.timer)
+      pending.current.drag.remove()
+      pending.current = undefined
+    }
     const bounds = new google.maps.LatLngBounds()
-    bounds.extend(start)
-    bounds.extend(destination.location)
+    for (const p of preview.route) bounds.extend(p)
     map.fitBounds(bounds, mapPadding())
-    const listener = google.maps.event.addListenerOnce(map, 'idle', () => {
-      if ((map.getZoom() ?? 0) > MAX_FIT_ZOOM) map.setZoom(MAX_FIT_ZOOM)
-    })
-    return () => listener.remove()
-  }, [map, key, destinationId]) // eslint-disable-line react-hooks/exhaustive-deps
+    const focus = preview.focus
+    if (!focus) {
+      google.maps.event.addListenerOnce(map, 'idle', () => {
+        if ((map.getZoom() ?? 0) > MAX_FIT_ZOOM) map.setZoom(MAX_FIT_ZOOM)
+      })
+      return
+    }
+    let touched = false
+    const drag = map.addListener('dragstart', () => (touched = true))
+    const timer = window.setTimeout(() => {
+      drag.remove()
+      pending.current = undefined
+      if (touched) return
+      map.setZoom(PIN_ZOOM)
+      map.panTo(offsetForPanel(map, focus))
+    }, 1800)
+    pending.current = { timer, drag }
+    // A new Enter (id) previews again; the route itself changing doesn't.
+  }, [map, id, ready]) // eslint-disable-line react-hooks/exhaustive-deps
+}
+
+/** Your drop-off pin. While you drag it, the area it may go in (near the building) is outlined. */
+function DropPin({ position, area, onMove }: { position: LatLng; area: LatLng[]; onMove: (point: LatLng) => void }) {
+  const [dragging, setDragging] = useState(false)
+  return (
+    <>
+      {dragging && area.length > 2 && (
+        <Polygon
+          paths={area}
+          strokeColor={COLOR.selected}
+          strokeOpacity={0.9}
+          strokeWeight={2}
+          fillColor={COLOR.selected}
+          fillOpacity={0.1}
+          clickable={false}
+          zIndex={30}
+        />
+      )}
+      <AdvancedMarker
+        position={position}
+        zIndex={55}
+        draggable
+        title="Drag to where you want to be dropped off (within 100 m of the building)"
+        onDragStart={() => setDragging(true)}
+        onDragEnd={(e) => {
+          setDragging(false)
+          const p = e.latLng?.toJSON()
+          if (p) onMove(p)
+        }}
+      >
+        <div className="pin-stop" style={{ borderColor: COLOR.selected, background: COLOR.selected, color: '#04201e' }}>
+          <CarIcon size={20} />
+        </div>
+      </AdvancedMarker>
+    </>
+  )
 }
 
 /** Leave room for the panel so fitted content isn't hidden behind it. */
