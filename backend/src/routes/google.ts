@@ -18,8 +18,9 @@ googleRoutes.get("/search", googleLimit, async (req, res) => {
   const { q } = z.object({ q: z.string().trim().min(1).max(200) }).parse(req.query);
   const buildings = await prisma.building.findMany({ include: { entrances: true } });
   try { res.json(parseDestination(q, buildings)); return; } catch { /* Try campus Places search. */ }
-  const places = await searchPlaces(q);
-  for (const place of places) {
+  const places = await searchPlaces(q, false);
+  // Preserve the top Places match; a lower-ranked campus result must not replace a searched address.
+  for (const place of places.slice(0, 1)) {
     const location = asLatLng(point.parse(place.location));
     const nearest = buildings.map(building => ({ building, distance: distanceMeters(location, asLatLng(building.location)) }))
       .sort((a, b) => a.distance - b.distance)[0];
@@ -29,7 +30,13 @@ googleRoutes.get("/search", googleLimit, async (req, res) => {
       return;
     }
   }
-  throw new HttpError(404, "Couldn't match that destination to a supported campus building. Try GC 150 or Green Library.");
+  const place = places[0];
+  if (place) {
+    res.json({ destination: { name: place.name, location: place.location, placeId: place.id }, room: "",
+      attributions: place.attributions });
+    return;
+  }
+  throw new HttpError(404, "Could not find that location. Try a full address or select a point on the map.");
 });
 googleRoutes.post("/plan", optionalAuth, googleLimit, async (req, res) => {
   const input = z.object({ buildingId: id, room: z.string().trim().max(100).default(""),
