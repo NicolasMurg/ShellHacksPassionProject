@@ -3,7 +3,7 @@ import type { RequestHandler } from "express";
 import { prisma } from "../lib/prisma";
 import { HttpError } from "../lib/validation";
 
-export const publicUser = { id: true, name: true, email: true, profile: true } as const;
+export const publicUser = { id: true, name: true, email: true, profile: true, role: true } as const;
 export const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 export async function createSession(userId: string) {
   const token = randomBytes(32).toString("base64url");
@@ -25,5 +25,10 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
 
 export const optionalAuth: RequestHandler = (req, res, next) => {
   if (req.headers.authorization) return requireAuth(req, res, next);
+  next();
+};
+
+export const requireAdmin: RequestHandler = (_req, res, next) => {
+  if (res.locals.user?.role !== 'ADMIN') throw new HttpError(403, 'Administrator access required');
   next();
 };

@@ -1,19 +1,26 @@
 import * as api from '../api'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { WalkSample } from '../walkedPaths'
 import type { LatLng } from '../types'
 
 export type Geo = { position?: LatLng; accuracy?: number; error?: string }
 
 /** Live GPS position (asks the browser for permission once). */
-export function useGeolocation(): Geo {
+export function useGeolocation(onSample?: (sample: WalkSample) => void): Geo {
+  const sampleHandler = useRef(onSample)
+  useEffect(() => { sampleHandler.current = onSample }, [onSample])
   const [geo, setGeo] = useState<Geo>(() => (navigator.geolocation ? {} : { error: 'Location is not supported in this browser' }))
 
   useEffect(() => {
     if (!navigator.geolocation) return
     const id = navigator.geolocation.watchPosition(
-      ({ coords }) => setGeo({ position: { lat: coords.latitude, lng: coords.longitude }, accuracy: coords.accuracy }),
+      ({ coords, timestamp }) => {
+        const position = { lat: coords.latitude, lng: coords.longitude }
+        setGeo({ position, accuracy: coords.accuracy })
+        sampleHandler.current?.({ ...position, timestamp, accuracy: coords.accuracy, speed: coords.speed })
+      },
       (err) => setGeo((g) => ({ ...g, error: err.code === err.PERMISSION_DENIED ? 'Location permission denied' : 'Location unavailable' })),
-      { enableHighAccuracy: true, maximumAge: 10_000, timeout: 15_000 },
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 15_000 },
     )
     return () => navigator.geolocation.clearWatch(id)
   }, [])

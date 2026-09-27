@@ -44,7 +44,10 @@ export type Zone = {
   id: string
   buildingId: string
   entranceId: string // the door this curb leads to
-  source: 'generated' | 'design' | 'personal'
+  source: 'generated' | 'design' | 'personal' | 'public'
+  publicStopId?: string
+  publicStopStatus?: 'VERIFIED' | 'UNVERIFIED'
+  instructions?: string
   rooms?: string[]
   name: string // "East loop curb"
   kinds: TripKind[] // what this curb can be used for
@@ -87,6 +90,7 @@ export type WalkingProfile = {
 }
 
 export type User = {
+  role: string
   id: string
   name: string
   email: string

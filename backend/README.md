@@ -136,3 +136,95 @@ route selection run on the server. Google route content is not stored in trips.
 
 References: [Routes API](https://developers.google.com/maps/documentation/routes/reference/rest/v2/TopLevel/computeRoutes),
 [Places Text Search](https://developers.google.com/maps/documentation/places/web-service/text-search).
+
+
+## Public stops and verification
+
+Public submissions, confirmations, reports, and review history live in the MongoDB
+`PublicStop` collection. Personal stops and campus zones keep their existing behavior.
+After reviewing the deployment target, apply the additive schema with `bun run db:push`
+(no `--accept-data-loss`), then restart the API after `bun run db:generate`.
+
+All accounts default to `USER`. To appoint a reviewer, first register the account,
+then run this explicit server-side command from `backend`:
+
+```bash
+bun run db:admin reviewer@example.com
+# Revoke reviewer permissions:
+bun run db:admin reviewer@example.com --revoke
+```
+
+Refresh the app after a role change. Every protected request reads the current
+server-side role; registration and profile updates cannot assign roles. Administrators
+cannot verify their own submissions. Use separate submitter and reviewer accounts
+for the demo. Institution/property-manager identity verification is not automated.
+
+Endpoints:
+
+- `GET /api/public-stops`: public list, 100 per page; pass `before=nextCursor`.
+- `GET /api/public-stops?review=true`: admin queue of unverified/disputed/expired stops.
+- `GET /api/public-stops?retired=true`: admin list including retired stops.
+- `GET /api/public-stops/:id`: stop detail and public history.
+- `POST /api/public-stops`: signed-in submission with name, instructions, GeoJSON
+  location, `kinds` (`DROPOFF`/`PICKUP`), and optional HTTPS `photoUrl`.
+- `POST /api/public-stops/:id/confirm`: signed-in confirmation with fresh GPS
+  location, accuracy <=50 meters, and timestamp <=2 minutes old. Distance plus
+  accuracy must be <=100 meters. One confirmation per account per stop; submitters
+  cannot confirm their own stop. Coordinates are not retained in confirmations.
+- `POST /api/public-stops/:id/reports`: category and details; one unresolved report
+  per account. Categories: `MISPLACED`, `INACCESSIBLE`, `PRIVATE_PROPERTY`, `CLOSED`,
+  `UNSAFE`, `OTHER`. A report immediately marks the stop `DISPUTED` and clears its
+  current access/accessibility assurances without deleting previous evidence.
+- `POST /api/public-stops/:id/review`: admin-only status, access, accessibility,
+  evidence notes (10+ characters), current `revision`, and `validDays` (1–180; default
+  90). A stale revision returns 409 rather than overwriting newer evidence.
+
+Statuses: `UNVERIFIED`, `VERIFIED`, `DISPUTED`, `RETIRED`. Access and accessibility
+are independent: verification requires `PERMITTED` public stopping, while step-free
+access can remain `UNKNOWN`. Resolving a dispute preserves its report and records
+its resolution date plus reviewer evidence. New reports can reopen a verified stop.
+Retired stops leave the public list but remain available to administrators/history.
+
+Verified stops expire on their next read and receive a System audit entry; arrival
+planning immediately downgrades expired verification to an Unverified preview, even before any list refresh.
+There is no scheduled expiration worker. `destination.publicStopId` in arrival
+planning rechecks status, expiry, public access, trip type, and required accessibility,
+then uses server-owned coordinates. Public-stop review does not certify Google’s
+entire walking route or any road-arrival pin adjustment.
+
+The MVP caps confirmations/reports at 1,000 each per stop, limits mutations to 30
+per account per minute, and uses an atomic revision check on every update. Nearby
+GPS and distinct accounts are supporting evidence, not proof of identity or physical
+presence; no automatic promotion follows from votes. Photo evidence is an optional
+external HTTPS link (not file uploads). Reports, review notes, and reviewer display
+names are public; confirmer/reporter account IDs and GPS observations are not.
+
+`bun run test` exercises this workflow in an isolated MongoDB replica set, including
+race conditions, role revocation, GPS validation, expiry, and route eligibility.
+
+
+### Public stops serving nearby destinations
+
+Public stops are reusable curb locations. They are not attached to the place or
+building selected when they were created. Both `/arrivals/plan` and campus `/plan`
+consider the five nearest eligible public stops within a 500 m straight-line radius,
+then require the actual Google walking route to be no longer than 500 m. Candidates
+may be Verified or Unverified, must not have restricted access, and must support
+the requested trip type. New submissions are immediately available as explicitly
+Unverified options; they are never automatically approved. Expired verification is
+also labeled Unverified. Step-free requests still require current verification and
+STEP_FREE accessibility. Disputed, retired, restricted, and route-blocked stops are excluded.
+
+Arrival planning retains the selected destination, routes drop-offs from the stop
+to that destination, and reverses the walk for pickups. A private saved preference
+has priority, followed by verified public stops, unverified public stops, then generated
+alternatives. An explicitly moved pin continues to override automatic discovery.
+Returned public options include `publicStopId`, `publicStopStatus`, the stop name,
+and instructions. Named public stops remain distinct even when Google snaps two
+stop pins to the same road endpoint.
+Campus plans evaluate public stops against the destination building's entrances,
+choose the best entrance per public stop, and label the option `source: public`.
+These are plan-time options, not duplicated Zone records in the database.
+
+This behavior needs no additional database schema change. Nearby-stop discovery is
+independent of the map list's pagination and of the admin review-queue filter.

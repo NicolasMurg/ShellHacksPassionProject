@@ -4,8 +4,8 @@ import type { Building, Entrance, GeoPoint, User, Zone, RouteRestriction } from 
 export type ApiPoint = GeoPoint;
 export type ApiBuilding = Building & { entrances: Entrance[] };
 export type ApiEntrance = Entrance;
-export type ApiZone = Zone;
-export type ApiUser = Pick<User, "id" | "name" | "email" | "profile">;
+export type ApiZone = Zone & { publicStopId?: string; publicStopStatus?: "VERIFIED" | "UNVERIFIED"; instructions?: string };
+export type ApiUser = Pick<User, "id" | "name" | "email" | "profile" | "role">;
 export type ApiClosure = Omit<RouteRestriction, "createdAt" | "startsAt" | "endsAt"> & {
   createdAt: string; startsAt: string | null; endsAt: string | null; owner?: { id: string; name: string } | null;
 };
@@ -18,14 +18,29 @@ export type ApiPlan = {
   options: { zone?: ApiZone; entrance: Entrance; walkSeconds: number; reason: string; warnings: string[]; route: ApiRoute }[];
 };
 
-export type ApiArrivalDestination = { name: string; location: GeoPoint; placeId?: string };
+export type ApiArrivalDestination = { name: string; location: GeoPoint; placeId?: string; publicStopId?: string };
 export type ApiPersonalStop = {
   id: string; destinationKey: string; destinationLocation: GeoPoint; placeId: string | null;
   stopPoint: GeoPoint; name: string; instructions: string; updatedAt: string;
 };
 export type ApiArrivalPlan = {
-  options: { id: string; stopPoint: GeoPoint; source: "saved" | "suggested" | "manual";
+  options: { id: string; publicStopId?: string; publicStopStatus?: "VERIFIED" | "UNVERIFIED"; stopPoint: GeoPoint; source: "saved" | "suggested" | "manual" | "public";
     name: string; instructions: string; walkSeconds: number; walk: ApiRoute; drive?: ApiRoute;
     warnings: string[] }[];
   notices: string[]; savedStop: ApiPersonalStop | null; accessibilityVerified: false;
 };
+
+export type ApiPublicStop = {
+  id: string; name: string; instructions: string; location: ApiPoint;
+  kinds: ("DROPOFF" | "PICKUP" | "BOTH")[]; photoUrl: string | null;
+  status: "UNVERIFIED" | "VERIFIED" | "DISPUTED" | "RETIRED";
+  access: "UNKNOWN" | "PERMITTED" | "RESTRICTED";
+  accessibility: "UNKNOWN" | "STEP_FREE" | "NOT_STEP_FREE";
+  confirmationCount: number; confirmedByMe: boolean; submittedByMe: boolean; reportedByMe: boolean;
+  reports: { id: string; category: string; details: string; createdAt: string; resolvedAt: string | null }[];
+  reviews: { actorName: string; status: ApiPublicStop["status"]; notes: string;
+    access: ApiPublicStop["access"]; accessibility: ApiPublicStop["accessibility"]; createdAt: string }[];
+  verifiedAt: string | null; verificationExpiresAt: string | null;
+  revision: number; createdAt: string;
+};
+export type ApiPublicStopPage = { stops: ApiPublicStop[]; nextCursor: string | null };

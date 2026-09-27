@@ -1,5 +1,8 @@
+import { PublicStopsPanel } from './components/PublicStopsPanel'
+import { usePublicStops } from './state/publicStops'
 import { APIProvider, useMap } from '@vis.gl/react-google-maps'
 import { useEffect, useRef, useState } from 'react'
+import { resolveLocationName } from './search'
 import { ArrivalPanel } from './components/ArrivalPanel'
 import { useArrival } from './state/arrivals'
 import { AccountMenu } from './components/Account'
@@ -20,6 +23,7 @@ import { distanceMeters } from './geo'
 import { useCampus, useClosures, useZones } from './state/data'
 import { useGeolocation, useRoute, useServerPlan, type Geo } from './state/routing'
 import type { LatLng, TravelMode, Zone } from './types'
+import { useWalkedPaths } from './state/walkedPaths'
 import { needsStepFree } from './walking'
 
 const API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined
@@ -43,7 +47,7 @@ export default function App() {
   )
 }
 
-type Panel = 'dropoff' | 'edit' | 'closure'
+type Panel = 'dropoff' | 'edit' | 'closure' | 'public'
 
 function Doorstep() {
   const { user, token, restoring, sendFeedback, error: authError } = useAuth()
@@ -51,6 +55,9 @@ function Doorstep() {
   const zoneStore = useZones(campus.defaults, campus.buildings, user, token)
   const closureStore = useClosures(token)
 
+  const publicStops = usePublicStops(token, user?.role === 'ADMIN')
+  const [selectedPublicStopId, setSelectedPublicStopId] = useState<string>()
+  const [publicStopDraft, setPublicStopDraft] = useState<LatLng>()
   const [panel, setPanel] = useState<Panel>('dropoff')
   const [tool, setTool] = useState<Tool>('none')
   const [draftClosure, setDraftClosure] = useState<LatLng[]>([])
@@ -62,6 +69,7 @@ function Doorstep() {
   // Drop-off planning
   const [destination, setDestination] = useState<Destination>()
   const [arrivalDestination, setArrivalDestination] = useState<api.ArrivalDestination>()
+  const [searchText, setSearchText] = useState('')
   const [searchError, setSearchError] = useState<string>()
   const [mode, setMode] = useState<TravelMode>('dropoff')
   const [stepFreeChoice, setStepFreeChoice] = useState<boolean>()
@@ -78,12 +86,13 @@ function Doorstep() {
   const stepFree = stepFreeChoice ?? needsStepFree(user?.profile)
   const { zones } = zoneStore
 
-  const geo = useGeolocation()
+  const walkedPaths = useWalkedPaths(tab === 'map' && panel === 'dropoff')
+  const geo = useGeolocation(walkedPaths.record)
   const onCampus = geo.position && distanceMeters(geo.position, CAMPUS_CENTER) < 3000
   const walkStart = onCampus && geo.position ? { location: geo.position, fromGps: true, label: 'your location' } : { ...WALK_DEMO_START, fromGps: false }
   const planning = useServerPlan(destination ? { buildingId: destination.building.id, room: destination.room,
     kind: mode, stepFree, origin: walking ? { lat: +walkStart.location.lat.toFixed(4), lng: +walkStart.location.lng.toFixed(4) } : undefined } : undefined,
-    token, JSON.stringify([user?.profile, zoneStore.personal, closureStore.closures]))
+    token, JSON.stringify([user?.profile, zoneStore.personal, closureStore.closures, publicStops.stops.map(s => [s.id, s.revision])]))
   const options = (planning.data?.options ?? []).flatMap(o => o.zone ? [{ ...o, zone: o.zone }] : [])
   const doors = walking ? planning.data?.options ?? [] : []
   const activeZoneId = panel === 'edit' ? editingZoneId : options.some(o => o.zone.id === selectedZoneId) ? selectedZoneId : options[0]?.zone.id
@@ -98,12 +107,18 @@ function Doorstep() {
   const arrival = useArrival(arrivalDestination && panel === 'dropoff' ? {
     destination: arrivalDestination, kind: mode === 'pickup' ? 'pickup' : 'dropoff', stepFree,
     origin: geo.position ? { lat: +geo.position.lat.toFixed(4), lng: +geo.position.lng.toFixed(4) } : undefined,
-  } : undefined, token, JSON.stringify([user?.profile, closureStore.closures]))
+  } : undefined, token, JSON.stringify([user?.profile, closureStore.closures, publicStops.stops.map(s => [s.id, s.revision])]))
+  const referenceWalk = arrivalDestination ? arrival.option?.walk.path : walk?.path
+  const setWalkReference = walkedPaths.setReference
+  useEffect(() => { setWalkReference(referenceWalk ?? []) }, [referenceWalk, setWalkReference])
   const mapDestination = arrivalDestination ? { id: arrivalDestination.placeId ?? `point:${arrivalDestination.location.lat},${arrivalDestination.location.lng}`,
     name: arrivalDestination.name, code: '', location: arrivalDestination.location, entrances: [] } : destination?.building
 
   const clearSelection = () => {
+    setSelectedPublicStopId(undefined)
+    setPublicStopDraft(undefined)
     arrival.reset()
+    setSearchText('')
     setArrivalDestination(undefined)
     searchRequest.current?.abort()
     setDestination(undefined)
@@ -139,8 +154,13 @@ function Doorstep() {
       const result = await api.search(text, controller.signal)
       if (controller.signal.aborted) return
       clearSelection()
-      if (result.building) setDestination({ building: result.building, room: result.room })
-      else if (result.destination) setArrivalDestination(result.destination)
+      if (result.building) {
+        setDestination({ building: result.building, room: result.room })
+        setSearchText([result.building.name, result.room].filter(Boolean).join(' '))
+      } else if (result.destination) {
+        setArrivalDestination(result.destination)
+        setSearchText(result.destination.name)
+      }
       setSearchError(undefined)
       setSelectedZoneId(undefined)
       setSelectedDoorId(undefined)
@@ -148,12 +168,16 @@ function Doorstep() {
     } catch (e) {
       if (controller.signal.aborted) return
       clearSelection()
+      setSearchText(text)
       setSearchError((e as Error).message)
     }
   }
 
   const handleMapClick = (point: LatLng, placeId?: string) => {
-    if (tool === 'addZone') {
+    if (tool === 'addPublicStop') {
+      setPublicStopDraft(point)
+      setTool('none')
+    } else if (tool === 'addZone') {
       const zone = zoneStore.createAt(point)
       if (zone) setEditingZoneId(zone.id)
       setTool('none')
@@ -162,7 +186,18 @@ function Doorstep() {
     } else if (panel === 'dropoff') {
       if (arrivalDestination && arrival.moving) { arrival.moveTo(point); return }
       clearSelection()
-      setArrivalDestination({ name: placeId ? 'Selected place' : 'Selected location', location: point, placeId })
+      const selected = { name: `${point.lat.toFixed(5)}, ${point.lng.toFixed(5)}`, location: point, placeId }
+      setArrivalDestination(selected)
+      setSearchText(selected.name)
+      const controller = new AbortController()
+      searchRequest.current = controller
+      void resolveLocationName(point, placeId).then(name => {
+        if (controller.signal.aborted) return
+        setArrivalDestination({ ...selected, name })
+        setSearchText(name)
+      }).catch(() => {
+        // Keep the selected coordinates usable when the name lookup is unavailable.
+      })
       setExpanded(true)
     }
   }
@@ -178,7 +213,10 @@ function Doorstep() {
     setArrivalDestination(undefined)
     if (zone.buildingId !== destination?.building.id) {
       const building = campus.buildings.find((b) => b.id === zone.buildingId)
-      if (building) setDestination({ building, room: '' })
+      if (building) {
+        setDestination({ building, room: '' })
+        setSearchText(building.name)
+      }
     }
     setSelectedZoneId(zone.id)
     setConfirmedZoneId(undefined)
@@ -195,16 +233,37 @@ function Doorstep() {
         <main className="absolute inset-0" inert={tab !== 'map'}>
       <MapCanvas
         layers={layers}
+        publicStops={publicStops.stops.filter(stop => stop.status !== 'RETIRED')}
+        nearbyPublicStops={panel !== 'dropoff' ? [] : arrivalDestination
+          ? (arrival.data?.options ?? []).flatMap(option => option.publicStopId ? [{ id: option.publicStopId, status: option.publicStopStatus ?? 'UNVERIFIED', name: option.name, location: option.stopPoint }] : [])
+          : options.flatMap(option => option.zone.publicStopId ? [{ id: option.zone.publicStopId, status: option.zone.publicStopStatus ?? 'UNVERIFIED', name: option.zone.name, location: option.zone.stopPoint }] : [])}
+        activePublicStopId={panel !== 'dropoff' ? undefined : arrivalDestination ? arrival.option?.publicStopId : activeOption?.zone.publicStopId}
+        publicStopDraft={publicStopDraft}
+        selectedPublicStopId={selectedPublicStopId}
+        onSelectPublicStop={stop => {
+          if (panel === 'dropoff' && arrivalDestination) {
+            const option = arrival.data?.options.find(option => option.publicStopId === stop.id)
+            if (option) { arrival.select(option.id); setExpanded(true); return }
+          }
+          if (panel === 'dropoff' && destination) {
+            const option = options.find(option => option.zone.publicStopId === stop.id)
+            if (option) { setSelectedZoneId(option.zone.id); setConfirmedZoneId(undefined); setExpanded(true); return }
+          }
+          clearSelection(); setPanel('public'); setTool('none'); setPublicStopDraft(undefined)
+          setSelectedPublicStopId(stop.id); setExpanded(true)
+        }}
+        learnedPaths={walkedPaths.paths}
+        liveWalk={walkedPaths.live}
         buildings={campus.buildings}
         entrances={campus.entrances}
         zones={zones}
         closures={closureStore.closures}
         destination={panel === 'dropoff' ? mapDestination : undefined}
-        arrivalStop={panel === 'dropoff' && arrivalDestination ? arrival.option?.stopPoint ?? arrival.draft : undefined}
+        arrivalStop={panel !== 'dropoff' ? undefined : arrivalDestination ? arrival.option?.stopPoint ?? arrival.draft : activeOption?.zone.source === 'public' ? activeOption.zone.stopPoint : undefined}
         movingArrival={arrival.moving}
         onMoveArrival={arrival.moveTo}
         selectedZoneId={walking && panel === 'dropoff' ? undefined : activeZoneId}
-        focusEntranceId={activeDoor?.entrance.id}
+        focusEntranceId={activeDoor?.entrance.id ?? activeOption?.entrance.id}
         walkMode={walking && panel === 'dropoff'}
         walkStart={activeDoor && !walkStart.fromGps ? walkStart : undefined}
         editingZoneId={editingZone?.source === 'personal' ? editingZone.id : undefined}
@@ -219,7 +278,10 @@ function Doorstep() {
         onSelectBuilding={(b) => {
           searchRequest.current?.abort()
           clearSelection()
+          setPanel('dropoff')
           setDestination({ building: b, room: '' })
+          setSearchText(b.name)
+          setExpanded(true)
           setSearchError(undefined)
           setSelectedZoneId(undefined)
           setSelectedDoorId(undefined)
@@ -230,6 +292,9 @@ function Doorstep() {
 
       <div className="absolute right-4 top-[max(16px,env(safe-area-inset-top))] z-30 flex flex-col items-end gap-2">
         <div className="flex items-center gap-2">
+          <Button className="bg-surface shadow-[var(--shadow-float)]" onClick={() => {
+            clearSelection(); setPanel('public'); setTool('none'); setSelectedPublicStopId(undefined); setPublicStopDraft(undefined); setExpanded(true)
+          }}>Public stops</Button>
           <Legend />
           <LayerControl value={layers} onChange={setLayers} />
           <AccountMenu
@@ -259,9 +324,24 @@ function Doorstep() {
           <span className="ml-auto text-xs text-muted">the right door, every time</span>
         </div>
 
+        {panel === 'dropoff' && <section className="rounded-xl border border-line bg-raised px-3 py-2 text-xs" aria-label="Walking path learning">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span role="status">{geo.error ?? walkedPaths.status} · {walkedPaths.paths.length} learned paths</span>
+            <div className="flex gap-3">
+              <button type="button" className="font-semibold text-accent" onClick={walkedPaths.toggle}>{walkedPaths.paused ? 'Resume' : 'Pause'}</button>
+              <button type="button" className="font-semibold text-muted" onClick={walkedPaths.clear}>Clear walks</button>
+            </div>
+          </div>
+          <p className="mb-0 mt-1 text-muted">GPS walks save automatically on this device while the map is open. Blue: walked · Purple: repeated · Orange: differs from your planned walk. Paths are unverified.</p>
+          {walkedPaths.storageError && <p className="mb-0 mt-1 text-muted">Browser storage is unavailable; these walks last until you close the app.</p>}
+        </section>}
+
         {(authError || zoneStore.error || closureStore.error) && <Notice tone="error">{authError ?? zoneStore.error ?? closureStore.error}</Notice>}
         {panel === 'dropoff' && arrivalDestination && <ArrivalPanel
           key={`${arrivalDestination.placeId ?? ''}:${arrivalDestination.location.lat},${arrivalDestination.location.lng}:${token ?? ''}`}
+          user={user} searchText={searchText}
+          onSearchTextChange={text => { searchRequest.current?.abort(); setSearchText(text) }}
+          onSearch={search} onClear={clearSelection}
           destination={arrivalDestination} state={arrival} token={token} onSignIn={() => setTab('preferences')}
           kind={mode === 'pickup' ? 'pickup' : 'dropoff'} onKind={setMode} stepFree={stepFree} onStepFree={setStepFreeChoice}
         />}
@@ -288,6 +368,8 @@ function Doorstep() {
             feedbackSent={feedbackSent}
             drive={drive && { seconds: drive.seconds, fromGps: !!geo.position }}
             planning={planning.loading}
+            searchText={searchText}
+            onSearchTextChange={text => { searchRequest.current?.abort(); setSearchText(text) }}
             onSearch={search}
             onClear={clearSelection}
             onSignIn={() => setTab('preferences')}
@@ -299,6 +381,22 @@ function Doorstep() {
             error={searchError ?? planning.error ?? driveResult.error ?? campus.error}
           />
         )}
+
+        {panel === 'public' && <PublicStopsPanel
+          store={publicStops} user={user} token={token}
+          selected={publicStops.stops.find(stop => stop.id === selectedPublicStopId)}
+          draft={publicStopDraft} adding={tool === 'addPublicStop'}
+          onAdd={() => { setSelectedPublicStopId(undefined); setPublicStopDraft(undefined); setTool('addPublicStop') }}
+          onSelect={stop => { setSelectedPublicStopId(stop?.id); setTool('none') }}
+          onCancelAdd={() => { setPublicStopDraft(undefined); setTool('none') }}
+          onDone={() => { setPanel('dropoff'); setTool('none'); setPublicStopDraft(undefined); setSelectedPublicStopId(undefined) }}
+          onSignIn={() => setTab('preferences')}
+          onUse={stop => {
+            clearSelection(); setArrivalDestination({ name: stop.name, location: stop.location, publicStopId: stop.id })
+            setSearchText(stop.name); setMode(stop.kinds.includes('DROPOFF') || stop.kinds.includes('BOTH') ? 'dropoff' : 'pickup')
+            setPanel('dropoff'); setTool('none'); setSelectedPublicStopId(undefined); setPublicStopDraft(undefined)
+          }}
+        />}
 
         {panel === 'edit' && user && (
           <EditPanel

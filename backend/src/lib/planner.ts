@@ -1,8 +1,10 @@
-import type { GeoPoint, WalkingProfile } from "@prisma/client";
+import type { GeoPoint, WalkingProfile, Zone } from "@prisma/client";
 import { prisma } from "./prisma";
 import { computeRoute } from "./google";
 import { point, HttpError } from "./validation";
 import { walkSecondsForPath } from "./walking";
+import { nearbyPublicStops, PUBLIC_STOP_RADIUS_METERS, needsAccessibleStop, publicStopRoutingStatus } from "./publicStops";
+import { touchesRestriction } from "./restrictions";
 import { distanceToPath } from "../../../shared/geo";
 
 export const asLatLng = (p: GeoPoint) => { const [lng, lat] = point.parse(p).coordinates; return { lat, lng }; };
@@ -21,17 +23,25 @@ export async function rankPlan(input: { buildingId: string; room: string; kind: 
   const shared = await prisma.zone.findMany({ where: { buildingId: input.buildingId,
     OR: [{ ownerId: null }, { ownerId: { isSet: false } }] } });
   const personal = user ? await prisma.zone.findMany({ where: { ownerId: user.id } }) : [];
-  if (input.kind !== "WALK" && shared.length === 0 && !personal.some(z => z.buildingId === building.id)) {
-    throw new HttpError(503, "Pickup and drop-off locations are not available for this building yet.");
-  }
   const replaced = new Set(personal.map(z => z.basedOnZoneId).filter(Boolean));
   const zones = [...shared.filter(z => !replaced.has(z.id)), ...personal.filter(z => z.buildingId === building.id)]
     .filter(z => !z.hidden && (z.kinds.includes("BOTH") || z.kinds.some(k => k === input.kind)));
   const profile = paceProfile(user?.profile);
   const stepFree = input.stepFree || user?.profile.avoidStairs || profile?.mobility === "wheelchair" || profile?.mobility === "stroller";
-  let candidates = input.kind === "WALK"
+  const nearby = input.kind === 'WALK' ? [] : await nearbyPublicStops(
+    [building.location, ...building.entrances.map(e => e.location)], input.kind, needsAccessibleStop(input.stepFree, user?.profile));
+  if (input.kind !== 'WALK' && shared.length === 0 && !personal.some(z => z.buildingId === building.id) && !nearby.length) {
+    throw new HttpError(503, 'Pickup and drop-off locations are not available for this building yet.');
+  }
+  type PlannedZone = Zone & { publicStopId?: string; publicStopStatus?: 'VERIFIED' | 'UNVERIFIED'; instructions?: string };
+  let candidates: { entrance: typeof building.entrances[number]; zone?: PlannedZone }[] = input.kind === "WALK"
     ? building.entrances.map(entrance => ({ entrance, zone: undefined as typeof zones[number] | undefined }))
     : zones.flatMap(zone => { const entrance = building.entrances.find(e => e.id === zone.entranceId); return entrance ? [{ entrance, zone }] : []; });
+  candidates.push(...nearby.flatMap(stop => building.entrances.map(entrance => ({ entrance, zone: {
+    id: `public:${stop.id}:${entrance.id}`, publicStopId: stop.id, publicStopStatus: publicStopRoutingStatus(stop)!, instructions: stop.instructions,
+    buildingId: building.id, entranceId: entrance.id, name: stop.name, kinds: stop.kinds,
+    source: 'public', polygon: [], stopPoint: stop.location, rooms: [], ownerId: null, basedOnZoneId: null, hidden: false,
+  } }))));
   if (stepFree) candidates = candidates.filter(c => c.entrance.accessible);
   const matching = candidates.filter(c => servesRoom(c.zone?.rooms.length ? c.zone.rooms : c.entrance.rooms, input.room));
   if (matching.length) candidates = matching;
@@ -47,26 +57,46 @@ export async function rankPlan(input: { buildingId: string; room: string; kind: 
     const batch = await Promise.all(candidates.slice(i, i + 3).map(async ({ entrance, zone }) => {
       const origin = point.parse(zone?.stopPoint ?? input.origin);
       let route;
-      try { route = await computeRoute(origin, point.parse(entrance.location), "WALK"); }
+      try { route = input.kind === "PICKUP"
+        ? await computeRoute(point.parse(entrance.location), origin, "WALK")
+        : await computeRoute(origin, point.parse(entrance.location), "WALK"); }
       catch (error) { if (error instanceof HttpError && error.status === 404) return null; throw error; }
+      if (zone?.source === 'public') {
+        if (route.distanceMeters > PUBLIC_STOP_RADIUS_METERS) return null;
+        const path = input.kind === 'PICKUP' ? [entrance.location, ...route.path, origin] : [origin, ...route.path, entrance.location];
+        const blocked = closures.some(c => {
+          if (c.type === 'STAIRS' && !stepFree) return false;
+          if (c.type === 'NO_CURB_CUT' && !stepFree && !user?.profile.requireCurbCuts) return false;
+          if (c.type === 'STEEP_SLOPE' && !stepFree && !user?.profile.avoidSteepSlopes) return false;
+          return touchesRestriction(path, c);
+        });
+        if (blocked) return null;
+      }
       const seconds = walkSecondsForPath(route.distanceMeters, profile, { floors: floorOf(input.room), stairs: !entrance.accessible });
       if (user?.profile.maxWalkMinutes && seconds > user.profile.maxWalkMinutes * 60) return null;
       const nearby = closures.filter(c => distanceToPath(asLatLng(origin), c.points.map(asLatLng)) < 40);
       const warnings = [...route.warnings, "Walking routes may lack sidewalks; accessibility along the full path is unverified."];
+      if (zone?.source === "public") warnings.push(zone.publicStopStatus === "VERIFIED" ? "Verified public stop shared by nearby destinations; walking-route accessibility is unverified." : "Unverified public stop: stopping permission, access, and accessibility have not been verified.");
       if (zone?.source === "generated") warnings.push("This generated stop has not been checked for legal or safe stopping.");
       if (!entrance.accessible) warnings.push("Stairs at this entrance");
       if (nearby.length) warnings.push(...nearby.map(c => `Nearby closure report: ${c.reason}`));
       if (closures.length) warnings.push("Reported closures are not automatically avoided by Google directions.");
       if (user?.profile.requireCurbCuts || user?.profile.avoidSteepSlopes) warnings.push("Curb cuts and slopes have not been verified.");
       const personal = Boolean(zone?.ownerId);
-      const penalty = nearby.length * 900 + (user?.profile.preferAccessibleEntrances && !entrance.accessible ? 1800 : 0) - (personal ? 20 : 0);
-      return { zone, entrance, walkSeconds: seconds, reason: `${personal ? "Your saved spot" : "Entrance"} for ${input.room ? `room ${input.room}` : building.name}`,
+      const penalty = nearby.length * 900 + (user?.profile.preferAccessibleEntrances && !entrance.accessible ? 1800 : 0) - (personal ? 20 : zone?.source === "public" ? 30 : 0);
+      return { zone, entrance, walkSeconds: seconds, reason: `${personal ? "Your saved spot" : zone?.source === "public" ? "Nearby public stop" : "Entrance"} for ${input.room ? `room ${input.room}` : building.name}`,
         warnings, route, score: seconds + penalty };
     }));
     results.push(...batch.filter(x => x !== null));
   }
   results.sort((a, b) => a.score - b.score);
-  const options = results.map(({ score, ...option }) => option);
+  const seenStops = new Set<string>();
+  const options = results.filter(option => {
+    const id = option.zone?.publicStopId;
+    if (!id) return true;
+    if (seenStops.has(id)) return false;
+    seenStops.add(id); return true;
+  }).map(({ score, ...option }) => option);
   const trip = user && options.length ? await prisma.trip.create({ data: { userId: user.id } }) : undefined;
   return { tripId: trip?.id, options, accessibilityVerified: false };
 }

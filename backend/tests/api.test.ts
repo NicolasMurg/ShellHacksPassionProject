@@ -58,7 +58,7 @@ beforeAll(async () => {
     if (providerMode === "empty") return Response.json({ routes: [] });
     const from = body.origin.location.latLng, to = { ...(body.destination.location?.latLng ?? { latitude: 25.78, longitude: -80.39 }) };
     if (body.travelMode === "DRIVE") to.longitude -= 0.0002;
-    return Response.json({ routes: [{ distanceMeters: 100, duration: "60s", polyline: { encodedPolyline: encode([from, to]) },
+    return Response.json({ routes: [{ distanceMeters: providerMode === "longwalk" && body.travelMode === "WALK" ? 900 : 100, duration: "60s", polyline: { encodedPolyline: encode([from, to]) },
       legs: [{ endLocation: { latLng: to } }], warnings: ["Use caution"] }] });
   };
   mock = spyOn(globalThis, "fetch").mockImplementation(Object.assign(provider, { preconnect: nativeFetch.preconnect }));
@@ -302,6 +302,243 @@ test("closure geometry detects segment crossings and area interiors rather than 
   })).toBe(true);
   expect(touchesRestriction([point(26, -81)], { geometryType: 'POINT', points: [point(25, -80)] })).toBe(false);
 });
+test("public stops enforce ownership, nearby confirmations, reports, and admin review", async () => {
+  const location = { type: 'Point', coordinates: [-80.374, 25.756] };
+  const submission = { name: 'Public library curb', instructions: 'Use the signed loading area.', location, kinds: ['DROPOFF', 'PICKUP'] };
+  expect((await request('/public-stops', 'POST', submission)).status).toBe(401);
+  expect((await request('/public-stops', 'POST', { ...submission, status: 'VERIFIED' }, token)).status).toBe(400);
+  expect((await request('/public-stops', 'POST', { ...submission, photoUrl: 'javascript:alert(1)' }, token)).status).toBe(400);
+  const created = await request('/public-stops', 'POST', submission, token);
+  expect(created.status).toBe(201);
+  const stopId = created.body.id;
+  const path = `/public-stops/${stopId}`;
+  expect(created.body.status).toBe('UNVERIFIED');
+  expect(created.body.submittedBy).toBeUndefined();
+  expect((await request('/public-stops')).body.stops.some((s: any) => s.id === stopId)).toBe(true);
+  expect((await request('/me', 'PATCH', { role: 'ADMIN' }, otherToken)).status).toBe(400);
+  expect((await request('/public-stops?review=true', 'GET', undefined, otherToken)).status).toBe(403);
+  const fix = { location, accuracy: 5, timestamp: Date.now() };
+  expect((await request(`${path}/confirm`, 'POST', fix, token)).status).toBe(403);
+  expect((await request(`${path}/confirm`, 'POST', { ...fix, timestamp: Date.now() - 180000 }, otherToken)).status).toBe(400);
+  expect((await request(`${path}/confirm`, 'POST', { ...fix, accuracy: 100 }, otherToken)).status).toBe(400);
+  expect((await request(`${path}/confirm`, 'POST', { ...fix, location: { type: 'Point', coordinates: [-81, 26] } }, otherToken)).status).toBe(400);
+  const confirmed = await request(`${path}/confirm`, 'POST', fix, otherToken);
+  expect(confirmed.status).toBe(200);
+  expect(confirmed.body.confirmationCount).toBe(1);
+  expect(confirmed.body.status).toBe('UNVERIFIED');
+  expect(confirmed.body.confirmations).toBeUndefined();
+  expect((await request(`${path}/confirm`, 'POST', fix, otherToken)).status).toBe(409);
+  const adminData = await request('/auth/register', 'POST', { name: 'Reviewer', email: 'reviewer@example.com', password: 'reviewer-password' });
+  expect(adminData.status).toBe(201);
+  const adminToken = adminData.body.token;
+  const review = { status: 'VERIFIED', access: 'PERMITTED', accessibility: 'STEP_FREE', notes: 'Inspected public loading signs and level curb access.', validDays: 90, revision: confirmed.body.revision };
+  expect((await request(`${path}/review`, 'POST', review, adminToken)).status).toBe(403);
+  await prisma.user.update({ where: { id: adminData.body.user.id }, data: { role: 'ADMIN' } });
+  expect((await request('/me', 'GET', undefined, adminToken)).body.role).toBe('ADMIN');
+  expect((await request(`${path}/review`, 'POST', { ...review, access: 'UNKNOWN' }, adminToken)).status).toBe(400);
+  expect((await request(`${path}/review`, 'POST', { ...review, revision: 0 }, adminToken)).status).toBe(409);
+  const verified = await request(`${path}/review`, 'POST', review, adminToken);
+  expect(verified.status).toBe(200);
+  expect(verified.body.status).toBe('VERIFIED');
+  expect(verified.body.verificationExpiresAt).toBeString();
+  expect(verified.body.reviews.at(-1).actorName).toBe('Reviewer');
+  const destination = { name: 'Public stop', location, publicStopId: stopId };
+  const publicPlan = await request('/arrivals/plan', 'POST', { destination });
+  expect(publicPlan.status).toBe(200);
+  expect(publicPlan.body.options[0].source).toBe('public');
+  expect(publicPlan.body.options[0].name).toBe(submission.name);
+  const report = { category: 'CLOSED', details: 'Construction blocks the curb today.' };
+  const reported = await request(`${path}/reports`, 'POST', report, otherToken);
+  expect(reported.status).toBe(200);
+  expect(reported.body.status).toBe('DISPUTED');
+  expect(reported.body.access).toBe('UNKNOWN');
+  expect(reported.body.reports[0].userId).toBeUndefined();
+  expect((await request(`${path}/reports`, 'POST', report, otherToken)).status).toBe(409);
+  expect((await request('/arrivals/plan', 'POST', { destination })).status).toBe(409);
+  expect((await request(`${path}/review`, 'POST', { ...review, revision: verified.body.revision }, adminToken)).status).toBe(409);
+  const queue = await request('/public-stops?review=true', 'GET', undefined, adminToken);
+  expect(queue.body.stops.some((s: any) => s.id === stopId)).toBe(true);
+  const reverified = await request(`${path}/review`, 'POST', { ...review, revision: reported.body.revision }, adminToken);
+  expect(reverified.body.reports[0].resolvedAt).toBeString();
+  await prisma.publicStop.update({ where: { id: stopId }, data: { verificationExpiresAt: new Date(Date.now() - 1000) } });
+  const expiredPreview = await request('/arrivals/plan', 'POST', { destination });
+  expect(expiredPreview.status).toBe(200);
+  expect(expiredPreview.body.options[0].publicStopStatus).toBe('UNVERIFIED');
+  const expired = await request(path);
+  expect(expired.body.status).toBe('UNVERIFIED');
+  expect(expired.body.accessibility).toBe('UNKNOWN');
+  expect(expired.body.reviews.at(-1).actorName).toBe('System');
+  expect((await prisma.publicStop.findUniqueOrThrow({ where: { id: stopId } })).status).toBe('UNVERIFIED');
+  const retired = await request(`${path}/review`, 'POST', { ...review, status: 'RETIRED', revision: expired.body.revision }, adminToken);
+  expect(retired.status).toBe(200);
+  expect((await request('/public-stops')).body.stops.some((s: any) => s.id === stopId)).toBe(false);
+  expect((await request('/public-stops?retired=true', 'GET', undefined, adminToken)).body.stops.some((s: any) => s.id === stopId)).toBe(true);
+  expect((await request(`${path}/confirm`, 'POST', fix, otherToken)).status).toBe(409);
+  const own = await request('/public-stops', 'POST', submission, adminToken);
+  expect((await request(`/public-stops/${own.body.id}/review`, 'POST', { ...review, revision: 0 }, adminToken)).status).toBe(403);
+});
+
+test("public stop confirmation conflicts cannot double-count an account", async () => {
+  const location = { type: 'Point', coordinates: [-80.372, 25.757] };
+  const created = await request('/public-stops', 'POST', { name: 'East curb', instructions: 'Meet near the entrance.', location, kinds: ['PICKUP'] }, token);
+  expect(created.status).toBe(201);
+  const path = `/public-stops/${created.body.id}`;
+  const fix = { location, accuracy: 5, timestamp: Date.now() };
+  const results = await Promise.all([request(`${path}/confirm`, 'POST', fix, otherToken), request(`${path}/confirm`, 'POST', fix, otherToken)]);
+  expect(results.map(r => r.status).sort()).toEqual([200, 409]);
+  expect((await request(path)).body.confirmationCount).toBe(1);
+  const me = await request('/me', 'GET', undefined, otherToken);
+  await prisma.user.update({ where: { id: me.body.id }, data: { role: 'ADMIN' } });
+  const latest = (await request(path)).body;
+  const verified = await request(`${path}/review`, 'POST', { status: 'VERIFIED', access: 'PERMITTED', accessibility: 'UNKNOWN',
+    notes: 'Confirmed marked public pickup curb; accessibility not yet inspected.', revision: latest.revision }, otherToken);
+  expect(verified.status).toBe(200);
+  const destination = { name: 'Wrong client-supplied location', location: { type: 'Point', coordinates: [0, 0] }, publicStopId: latest.id };
+  expect((await request('/arrivals/plan', 'POST', { destination, kind: 'DROPOFF' })).status).toBe(400);
+  expect((await request('/arrivals/plan', 'POST', { destination, kind: 'PICKUP', stepFree: true })).status).toBe(409);
+  const plan = await request('/arrivals/plan', 'POST', { destination, kind: 'PICKUP' });
+  expect(plan.status).toBe(200);
+  expect(plan.body.options[0].stopPoint.coordinates[1]).toBeCloseTo(location.coordinates[1]!, 3);
+  const frontend = await import('../../frontend/src/api');
+  const page = await frontend.getPublicStops(otherToken);
+  const stop = page.stops.find(s => s.id === latest.id)!;
+  expect(stop.location.lat).toBeCloseTo(location.coordinates[1]!, 5);
+  expect(stop.status).toBe('VERIFIED');
+  expect(stop.confirmedByMe).toBe(true);
+  expect(stop.accessibility).toBe('UNKNOWN');
+  await prisma.user.update({ where: { id: me.body.id }, data: { role: 'USER' } });
+  expect((await request(`${path}/review`, 'POST', { status: 'RETIRED', access: 'UNKNOWN', accessibility: 'UNKNOWN', notes: 'Role revoked, must not succeed.', revision: verified.body.revision }, otherToken)).status).toBe(403);
+});
+
+test("nearby public stops serve different places while preserving each destination and eligibility rules", async () => {
+  const owner = await prisma.user.findUniqueOrThrow({ where: { email: 'alice@example.com' } });
+  const location = { type: 'Point', coordinates: [-81, 26] };
+  const baseStop = { name: 'Shared neighborhood curb', instructions: 'Meet beside the public loading sign.', location,
+    submittedBy: owner.id, kinds: ['DROPOFF', 'PICKUP'] as ('DROPOFF' | 'PICKUP')[], status: 'VERIFIED' as const,
+    access: 'PERMITTED' as const, accessibility: 'STEP_FREE' as const, verificationExpiresAt: new Date(Date.now() + 86400000),
+    confirmations: [], reports: [], reviews: [] };
+  const shared = await prisma.publicStop.create({ data: baseStop });
+  const excluded = await Promise.all([
+    prisma.publicStop.create({ data: { ...baseStop, status: 'DISPUTED' } }),
+    prisma.publicStop.create({ data: { ...baseStop, status: 'RETIRED' } }),
+    prisma.publicStop.create({ data: { ...baseStop, access: 'RESTRICTED' } }),
+    prisma.publicStop.create({ data: { ...baseStop, kinds: ['PICKUP'] } }),
+    prisma.publicStop.create({ data: { ...baseStop, location: { type: 'Point', coordinates: [-81.02, 26] } } }),
+  ]);
+  const destinations = [
+    { name: 'Neighborhood cafe', location: { type: 'Point', coordinates: [-81.0005, 26.0005] } },
+    { name: 'Neighborhood library', location: { type: 'Point', coordinates: [-80.999, 26.001] } },
+  ];
+  for (const destination of destinations) {
+    const result = await request('/arrivals/plan', 'POST', { destination });
+    expect(result.status).toBe(200);
+    const option = result.body.options[0];
+    expect(option.publicStopId).toBe(shared.id);
+    expect(option.name).toBe(shared.name);
+    expect(option.instructions).toBe(shared.instructions);
+    expect(option.walk.path.at(-1).coordinates).toEqual(destination.location.coordinates);
+    expect(result.body.options.some((o: any) => excluded.some(s => s.id === o.publicStopId))).toBe(false);
+  }
+  const pickup = await request('/arrivals/plan', 'POST', { destination: destinations[0], kind: 'PICKUP' });
+  expect(pickup.body.options.find((o: any) => o.publicStopId === shared.id).walk.path[0].coordinates).toEqual(destinations[0]!.location.coordinates);
+  // A manually chosen pin continues to override automatic nearby discovery.
+  const manual = await request('/arrivals/plan', 'POST', { destination: destinations[0], stopPoint: location });
+  expect(manual.body.options[0].source).toBe('manual');
+  expect(manual.body.options.some((o: any) => o.source === 'public')).toBe(false);
+  await prisma.publicStop.update({ where: { id: shared.id }, data: { accessibility: 'UNKNOWN' } });
+  const accessible = await request('/arrivals/plan', 'POST', { destination: destinations[0], stepFree: true });
+  expect(accessible.body.options.some((o: any) => o.publicStopId === shared.id)).toBe(false);
+  providerMode = 'longwalk';
+  try {
+    const long = await request('/arrivals/plan', 'POST', { destination: destinations[0] });
+    expect(long.body.options.some((o: any) => o.source === 'public')).toBe(false);
+    expect(long.body.notices.join(' ')).toContain('500 m');
+  } finally { providerMode = 'ok' }
+  const closure = await prisma.routeRestriction.create({ data: { type: 'ROAD_CLOSED', geometryType: 'POINT',
+    points: [{ type: 'Point', coordinates: [-81.0002, 26] }], reason: 'Public curb temporarily closed' } });
+  try {
+    const blocked = await request('/arrivals/plan', 'POST', { destination: destinations[0] });
+    expect(blocked.body.options.some((o: any) => o.publicStopId === shared.id)).toBe(false);
+  } finally { await prisma.routeRestriction.delete({ where: { id: closure.id } }) }
+});
+
+test("one public curb serves different campus buildings and uses the destination's entrance", async () => {
+  const owner = await prisma.user.findUniqueOrThrow({ where: { email: 'alice@example.com' } });
+  const buildings = [];
+  for (let i = 0; i < 2; i++) buildings.push(await prisma.building.create({ data: {
+    id: `public-stop-building-${i}`, code: `PS${i}`, name: `Public stop test building ${i}`,
+    location: { type: 'Point', coordinates: [-81.1, 26.1005 + i * 0.001] }, entrances: { create: {
+      label: 'Main door', accessible: true, rooms: [], location: { type: 'Point', coordinates: [-81.1, 26.1005 + i * 0.001] },
+    } },
+  }, include: { entrances: true } }));
+  const shared = await prisma.publicStop.create({ data: { name: 'Shared campus curb', instructions: 'Use the marked loading bay.',
+    location: { type: 'Point', coordinates: [-81.1, 26.1] }, submittedBy: owner.id, kinds: ['DROPOFF', 'PICKUP'],
+    status: 'VERIFIED', access: 'PERMITTED', accessibility: 'STEP_FREE', verificationExpiresAt: new Date(Date.now() + 86400000),
+    confirmations: [], reports: [], reviews: [] } });
+  for (const building of buildings) {
+    const result = await request('/plan', 'POST', { buildingId: building.id, kind: 'DROPOFF' });
+    expect(result.status).toBe(200);
+    expect(result.body.options).toHaveLength(1);
+    expect(result.body.options[0].zone.publicStopId).toBe(shared.id);
+    expect(result.body.options[0].zone.source).toBe('public');
+    expect(result.body.options[0].entrance.id).toBe(building.entrances[0]!.id);
+    expect(result.body.options[0].route.path.at(-1).coordinates[1]).toBeCloseTo(building.location.coordinates[1]!, 5);
+  }
+  const frontend = await import('../../frontend/src/api');
+  const plan = await frontend.plan({ buildingId: buildings[0]!.id, room: '', kind: 'pickup', stepFree: true });
+  expect(plan.options[0]!.zone!.source).toBe('public');
+  expect(plan.options[0]!.zone!.publicStopId).toBe(shared.id);
+  expect(plan.options[0]!.route.path[0]!.lat).toBeCloseTo(buildings[0]!.location.coordinates[1]!, 5);
+  expect(plan.options[0]!.route.path.at(-1)!.lat).toBeCloseTo(26.1, 5);
+  providerMode = 'longwalk';
+  try {
+    const long = await request('/plan', 'POST', { buildingId: buildings[0]!.id, kind: 'DROPOFF' });
+    expect(long.body.options).toHaveLength(0);
+  } finally { providerMode = 'ok' }
+  await prisma.publicStop.update({ where: { id: shared.id }, data: { status: 'DISPUTED' } });
+  expect((await request('/plan', 'POST', { buildingId: buildings[0]!.id, kind: 'DROPOFF' })).status).toBe(503);
+});
+
+test("newly submitted public stops appear by name for nearby clicks and named buildings without admin approval", async () => {
+  const location = { type: 'Point', coordinates: [-82, 27] };
+  const building = await prisma.building.create({ data: { id: 'new-stop-demo', name: 'Named demo location', code: 'NEW',
+    location: { type: 'Point', coordinates: [-82, 27.001] }, entrances: { create: {
+      label: 'Premade entrance', accessible: true, rooms: [], location: { type: 'Point', coordinates: [-82, 27.001] },
+    } } }, include: { entrances: true } });
+  await prisma.zone.create({ data: { id: 'new-stop-default', buildingId: building.id, entranceId: building.entrances[0]!.id,
+    name: 'Premade entrance zone', kinds: ['BOTH'], source: 'generated', polygon: [], stopPoint: location, rooms: [] } });
+  const submitted = await request('/public-stops', 'POST', { name: 'My parking lot', instructions: 'Meet at the painted curb.', location, kinds: ['DROPOFF', 'PICKUP'] }, token);
+  expect(submitted.status).toBe(201);
+  expect(submitted.body.status).toBe('UNVERIFIED');
+  const other = await request('/public-stops', 'POST', { name: 'Named neighboring curb', instructions: 'Beside the same road arrival.', location, kinds: ['DROPOFF'] }, token);
+  expect(other.status).toBe(201);
+  const destination = { name: 'Clicked location next door', location: { type: 'Point', coordinates: [-82.0002, 27.0002] } };
+  const clicked = await request('/arrivals/plan', 'POST', { destination });
+  expect(clicked.status).toBe(200);
+  for (const stop of [submitted.body, other.body]) {
+    const option = clicked.body.options.find((o: any) => o.publicStopId === stop.id);
+    expect(option.name).toBe(stop.name);
+    expect(option.publicStopStatus).toBe('UNVERIFIED');
+    expect(option.warnings.join(' ')).toContain('Unverified public stop');
+  }
+  // Public identity is preserved even when Google snaps multiple stops to the same road endpoint.
+  expect(clicked.body.options.filter((o: any) => o.source === 'public')).toHaveLength(2);
+  const direct = await request('/arrivals/plan', 'POST', { destination: { ...destination, publicStopId: submitted.body.id } });
+  expect(direct.status).toBe(200);
+  expect(direct.body.options[0].name).toBe('My parking lot');
+  expect(direct.body.options[0].publicStopStatus).toBe('UNVERIFIED');
+  const frontend = await import('../../frontend/src/api');
+  const named = await frontend.plan({ buildingId: building.id, room: '', kind: 'dropoff', stepFree: false });
+  expect(named.options.some(o => o.zone?.name === 'Premade entrance zone')).toBe(true);
+  const publicOption = named.options.find(o => o.zone?.publicStopId === submitted.body.id)!;
+  expect(publicOption.zone!.name).toBe('My parking lot');
+  expect(publicOption.zone!.source).toBe('public');
+  expect(publicOption.zone!.publicStopStatus).toBe('UNVERIFIED');
+  const accessible = await frontend.plan({ buildingId: building.id, room: '', kind: 'dropoff', stepFree: true });
+  expect(accessible.options.some(o => o.zone?.publicStopId === submitted.body.id)).toBe(false);
+  expect((await prisma.publicStop.findUniqueOrThrow({ where: { id: submitted.body.id } })).status).toBe('UNVERIFIED');
+});
+
 test("CORS, JSON errors, and expired sessions remain correct", async () => {
   const response = await nativeFetch(base + "/buildings", { method: "OPTIONS", headers: {
     Origin: "http://localhost:8080", "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "authorization" } });

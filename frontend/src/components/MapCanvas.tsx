@@ -1,8 +1,11 @@
 import { AdvancedMarker, Circle, Map, Polygon, Polyline, useMap } from '@vis.gl/react-google-maps'
 import { useEffect, useRef, useState } from 'react'
+import { PublicStopPin } from './PublicStopPin'
 import { CAMPUS_CENTER } from '../data/mapDefaults'
 import { centroid, distanceMeters } from '../geo'
 import { MAP_STYLES, type MapLayers } from '../mapLayers'
+import type { PublicStop } from '../api'
+import type { LearnedPath, WalkPoint } from '../walkedPaths'
 import type { Building, Entrance, LatLng, RoadClosure, Zone } from '../types'
 
 // Keep in sync with the @theme colors in index.css (the map needs raw hex).
@@ -16,9 +19,17 @@ const COLOR = {
   me: '#4c8dff',
 }
 
-export type Tool = 'none' | 'addZone' | 'drawClosure'
+export type Tool = 'none' | 'addZone' | 'drawClosure' | 'addPublicStop'
 
 type Props = {
+  publicStops: PublicStop[]
+  nearbyPublicStops: Pick<PublicStop, 'id' | 'name' | 'location' | 'status'>[]
+  activePublicStopId?: string
+  publicStopDraft?: LatLng
+  selectedPublicStopId?: string
+  onSelectPublicStop: (stop: Pick<PublicStop, 'id' | 'name' | 'location'>) => void
+  learnedPaths: LearnedPath[]
+  liveWalk: WalkPoint[]
   buildings: Building[]
   entrances: globalThis.Map<string, Entrance>
   zones: Zone[]
@@ -58,7 +69,10 @@ export function MapCanvas(props: Props) {
 
   // In walk mode also fit where the walk starts (demo start, or you).
   const walkOrigin = props.walkMode ? (props.walkStart?.location ?? me?.position) : undefined
-  useFitTo(destination, walkOrigin)
+  const publicMarkers = [...props.publicStops, ...props.nearbyPublicStops.filter(stop => !props.publicStops.some(s => s.id === stop.id))]
+  const activePublicStop = publicMarkers.find(stop => stop.id === props.activePublicStopId)
+  const selectedPublicStop = props.publicStops.find(stop => stop.id === props.selectedPublicStopId)
+  useFitTo(selectedPublicStop ? { ...selectedPublicStop, code: '', entrances: [] } : destination, walkOrigin)
 
   // Car markers only where they help: the destination's zones, or your own zones while editing.
   const showStopFor = (z: Zone) =>
@@ -96,7 +110,18 @@ export function MapCanvas(props: Props) {
       {layers.traffic && <Overlay kind="traffic" />}
       {layers.transit && <Overlay kind="transit" />}
 
+      {!editMode && tool === 'none' && publicMarkers.map(stop => <AdvancedMarker key={`public:${stop.id}`} position={stop.location}
+        zIndex={stop.id === props.selectedPublicStopId || stop.id === props.activePublicStopId ? 60 : 15}
+        title={`${stop.name} · ${stop.status.toLowerCase()} public stop`}
+        onClick={() => props.onSelectPublicStop(stop)}>
+        <PublicStopPin name={stop.name} status={stop.status} selected={stop.id === props.selectedPublicStopId || stop.id === props.activePublicStopId} />
+      </AdvancedMarker>)}
+      {props.publicStopDraft && <AdvancedMarker position={props.publicStopDraft} zIndex={60}>
+        <PublicStopPin name="New public stop" status="UNVERIFIED" selected />
+      </AdvancedMarker>}
+
       {!destination &&
+        tool === 'none' &&
         !editMode &&
         buildings.map((b) => (
           <AdvancedMarker key={b.id} position={b.location} onClick={() => props.onSelectBuilding(b)} title={b.name}>
@@ -107,16 +132,28 @@ export function MapCanvas(props: Props) {
       {destination && !editMode && (
         <AdvancedMarker position={destination.location} zIndex={1}>
           <div className="rounded-full bg-[#3a3f48] px-2.5 py-1.5 text-[11px] font-bold text-[#c9ced6] opacity-90" title="Your destination">
-            Destination
+            {destination.name}
           </div>
         </AdvancedMarker>
       )}
 
-      {props.arrivalStop && !editMode && <AdvancedMarker position={props.arrivalStop} zIndex={50}
+      {props.arrivalStop && !editMode && (!activePublicStop || props.movingArrival || distanceMeters(activePublicStop.location, props.arrivalStop) > 8) && <AdvancedMarker position={props.arrivalStop} zIndex={50}
         draggable={props.movingArrival} title={props.movingArrival ? 'Drag to move the stop' : 'Suggested stopping point'}
         onDragEnd={e => { const p = e.latLng?.toJSON(); if (p) props.onMoveArrival(p) }}>
         <div className="pin-stop" style={{ borderColor: COLOR.selected, background: COLOR.selected }}>🚗</div>
       </AdvancedMarker>}
+
+      {!editMode && props.learnedPaths.map(({ trace, walks }) => (
+        <Polyline key={trace.id} path={trace.points} strokeColor={walks >= 2 ? '#a78bfa' : '#60a5fa'}
+          strokeWeight={walks >= 2 ? 6 : 4} strokeOpacity={0.8} clickable={false} zIndex={5} />
+      ))}
+      {!editMode && props.learnedPaths.flatMap(({ trace, walks }) => trace.points.slice(1).flatMap((point, index) =>
+        point.offRoute && trace.points[index].offRoute ? [
+          <Polyline key={`${trace.id}:${index}`} path={[trace.points[index], point]} strokeColor="#ffb547"
+            strokeWeight={walks >= 2 ? 7 : 4} strokeOpacity={0.9} clickable={false} zIndex={6} />,
+        ] : []))}
+      {!editMode && props.liveWalk.length >= 2 && <Polyline path={props.liveWalk} strokeColor="#60a5fa"
+        strokeWeight={3} strokeOpacity={0.9} clickable={false} zIndex={7} />}
 
       {/* Car route: you → curb */}
       {props.drivePath && !editMode && (

@@ -1,15 +1,18 @@
-import type { GeoPoint, PersonalStop, RouteRestriction, WalkingProfile } from '@prisma/client';
+import type { GeoPoint, PersonalStop, PublicStop, WalkingProfile } from '@prisma/client';
 import { z } from 'zod';
 import type { ApiArrivalPlan } from '../contracts';
 import { prisma } from './prisma';
+import { nearbyPublicStops, PUBLIC_STOP_RADIUS_METERS, needsAccessibleStop, publicStopRoutingStatus } from './publicStops';
+import { touchesRestriction } from './restrictions';
+export { touchesRestriction } from './restrictions';
 import { computeRoute } from './google';
-import { HttpError, point } from './validation';
+import { HttpError, point, objectId } from './validation';
 import { asLatLng, paceProfile } from './planner';
 import { walkSecondsForPath } from './walking';
-import { distanceMeters, distanceToPath, offset, type LatLng } from '../../../shared/geo';
+import { distanceMeters, offset, type LatLng } from '../../../shared/geo';
 
 export const arrivalDestination = z.object({ name: z.string().trim().min(1).max(200), location: point,
-  placeId: z.string().trim().min(1).max(300).optional() }).strict();
+  placeId: z.string().trim().min(1).max(300).optional(), publicStopId: objectId.optional() }).strict();
 export const arrivalInput = z.object({ destination: arrivalDestination, origin: point.optional(),
   stopPoint: point.optional(), stepFree: z.boolean().default(false), kind: z.enum(['DROPOFF', 'PICKUP']).default('DROPOFF') }).strict();
 export const geoPoint = (p: LatLng): z.infer<typeof point> => ({ type: 'Point', coordinates: [p.lng, p.lat] });
@@ -34,32 +37,19 @@ export async function findSavedStop(destination: z.infer<typeof arrivalDestinati
     .filter(s => s.distance < 25).sort((a, b) => a.distance - b.distance)[0]?.s ?? null;
 }
 
-function intersects(a: LatLng, b: LatLng, c: LatLng, d: LatLng) {
-  const cross = (p: LatLng, q: LatLng, r: LatLng) => (q.lng - p.lng) * (r.lat - p.lat) - (q.lat - p.lat) * (r.lng - p.lng);
-  return cross(a, b, c) * cross(a, b, d) < 0 && cross(c, d, a) * cross(c, d, b) < 0;
-}
-function inside(p: LatLng, polygon: LatLng[]) {
-  let contained = false;
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const a = polygon[i]!, b = polygon[j]!;
-    if ((a.lat > p.lat) !== (b.lat > p.lat) && p.lng < (b.lng - a.lng) * (p.lat - a.lat) / (b.lat - a.lat) + a.lng) contained = !contained;
-  }
-  return contained;
-}
-/** Check both crossings and proximity, including the interior of an area report. */
-export function touchesRestriction(path: GeoPoint[], restriction: Pick<RouteRestriction, 'points' | 'geometryType'>) {
-  const route = path.map(asLatLng), points = restriction.points.map(asLatLng);
-  if (!points.length || !route.length) return false;
-  if (restriction.geometryType === 'AREA' && route.some(p => inside(p, points))) return true;
-  const boundary = restriction.geometryType === 'AREA' ? [...points, points[0]!] : points;
-  if (route.some(p => distanceToPath(p, boundary) < 12) || boundary.some(p => distanceToPath(p, route) < 12)) return true;
-  for (let i = 1; i < route.length; i++) for (let j = 1; j < boundary.length; j++) {
-    if (intersects(route[i - 1]!, route[i]!, boundary[j - 1]!, boundary[j]!)) return true;
-  }
-  return false;
-}
-
 export async function planArrival(input: z.infer<typeof arrivalInput>, user?: { id: string; profile: WalkingProfile }) {
+  let reviewedStop: PublicStop | undefined;
+  if (input.destination.publicStopId) {
+    const stop = await prisma.publicStop.findUnique({ where: { id: input.destination.publicStopId } });
+    if (!stop || !publicStopRoutingStatus(stop)) {
+      throw new HttpError(409, 'This public stop is disputed, retired, or restricted. Choose another stop.');
+    }
+    if (!stop.kinds.includes('BOTH') && !stop.kinds.includes(input.kind)) throw new HttpError(400, 'This stop does not support this trip type.');
+    const needsAccessible = needsAccessibleStop(input.stepFree, user?.profile);
+    if (needsAccessible && (stop.accessibility !== 'STEP_FREE' || publicStopRoutingStatus(stop) !== 'VERIFIED')) throw new HttpError(409, 'Step-free access at this public stop has not been verified.');
+    reviewedStop = stop;
+    input = { ...input, destination: { name: stop.name, location: point.parse(stop.location), publicStopId: stop.id }, stopPoint: point.parse(stop.location) };
+  }
   const target = asLatLng(input.destination.location);
   if (input.stopPoint) validateStopDistance(input.stopPoint, input.destination.location);
   const saved = await findSavedStop(input.destination, user?.id);
@@ -76,18 +66,21 @@ export async function planArrival(input: z.infer<typeof arrivalInput>, user?: { 
     (r.type === 'NO_CURB_CUT' && user?.profile.requireCurbCuts) || (r.type === 'STEEP_SLOPE' && user?.profile.avoidSteepSlopes));
   // Without GPS this short approach is used only to discover arrival points, never as a displayed trip ETA.
   const origin = input.origin ?? geoPoint(offset(target, 0, -300));
-  type Candidate = { point: GeoPoint; source: 'saved' | 'suggested' | 'manual'; name: string; instructions: string; placeId?: string; priority: number };
+  type Candidate = { point: GeoPoint; source: 'saved' | 'suggested' | 'manual' | 'public'; name: string; instructions: string; placeId?: string; publicStopId?: string; publicStopStatus?: 'VERIFIED' | 'UNVERIFIED'; priority: number };
   const candidates: Candidate[] = [];
-  if (input.stopPoint) candidates.push({ point: input.stopPoint, source: 'manual', priority: 0, name: 'Your chosen stop', instructions: '' });
+  if (reviewedStop) candidates.push({ point: reviewedStop.location, source: 'public', publicStopId: reviewedStop.id, publicStopStatus: publicStopRoutingStatus(reviewedStop)!, priority: 0, name: reviewedStop.name, instructions: reviewedStop.instructions });
+  else if (input.stopPoint) candidates.push({ point: input.stopPoint, source: 'manual', priority: 0, name: 'Your chosen stop', instructions: '' });
   else {
     if (saved) candidates.push({ point: saved.stopPoint, source: 'saved', priority: 0, name: saved.name, instructions: saved.instructions });
-    candidates.push({ point: input.destination.location, placeId: input.destination.placeId, source: 'suggested', priority: 1, name: 'Suggested arrival point', instructions: '' });
+    const nearby = await nearbyPublicStops([input.destination.location], input.kind, needsAccessibleStop(input.stepFree, user?.profile));
+    candidates.push(...nearby.map(stop => ({ point: stop.location, source: 'public' as const, publicStopId: stop.id, publicStopStatus: publicStopRoutingStatus(stop)!, priority: publicStopRoutingStatus(stop) === 'VERIFIED' ? 1 : 2, name: stop.name, instructions: stop.instructions })));
+    candidates.push({ point: input.destination.location, placeId: input.destination.placeId, source: 'suggested', priority: 3, name: 'Suggested arrival point', instructions: '' });
   }
   const options: (ApiArrivalPlan['options'][number] & { priority: number })[] = [];
   let providerFailure: unknown;
   // Add alternatives along the mapped approach, never fabricate permission to use a private driveway.
   let expanded = false;
-  for (let i = 0; i < candidates.length && i < 5; i++) {
+  for (let i = 0; i < candidates.length && i < 9; i++) {
     const candidate = candidates[i]!;
     try {
       let drive = await computeRoute(point.parse(origin), point.parse(candidate.point), 'DRIVE', candidate.placeId ? { placeId: candidate.placeId } : { stopover: true });
@@ -112,7 +105,7 @@ export async function planArrival(input: z.infer<typeof arrivalInput>, user?: { 
             const ratio = (nextDistance - traversed) / segmentLength;
             const alternative = geoPoint({ lat: a.lat + (b.lat - a.lat) * ratio, lng: a.lng + (b.lng - a.lng) * ratio });
             if (!candidates.some(c => distanceMeters(asLatLng(c.point), asLatLng(alternative)) < 30)) {
-              candidates.push({ point: alternative, source: 'suggested', priority: 2, name: 'Nearby alternative', instructions: '' });
+              candidates.push({ point: alternative, source: 'suggested', priority: 4, name: 'Nearby alternative', instructions: '' });
             }
             nextDistance += 65;
           }
@@ -124,10 +117,13 @@ export async function planArrival(input: z.infer<typeof arrivalInput>, user?: { 
         notices.add(`${candidate.source === 'saved' ? 'Your saved spot' : 'The chosen pin'} could not be reached closely by road. Choose another point.`);
         continue;
       }
-      if (options.some(o => distanceMeters(asLatLng(o.stopPoint), asLatLng(stopPoint)) < 20)) continue;
+      if (options.some(o => candidate.publicStopId ? o.publicStopId === candidate.publicStopId : distanceMeters(asLatLng(o.stopPoint), asLatLng(stopPoint)) < 20)) continue;
       const walk = input.kind === 'PICKUP'
         ? await computeRoute(point.parse(input.destination.location), stopPoint, 'WALK')
         : await computeRoute(stopPoint, point.parse(input.destination.location), 'WALK');
+      if (candidate.source === 'public' && walk.distanceMeters > PUBLIC_STOP_RADIUS_METERS) {
+        notices.add(`${candidate.name} is more than 500 m away by walking route.`); continue;
+      }
       const blocked = restrictions.filter(r => (driveRestrictions.includes(r) && touchesRestriction([...drive.path, stopPoint], r)) ||
         (walkRestrictions.includes(r) && touchesRestriction([...(input.kind === 'PICKUP' ? [input.destination.location] : [stopPoint]), ...walk.path, ...(input.kind === 'PICKUP' ? [stopPoint] : [input.destination.location])], r)));
       if (blocked.length) {
@@ -138,11 +134,15 @@ export async function planArrival(input: z.infer<typeof arrivalInput>, user?: { 
       if (user?.profile.maxWalkMinutes && walkSeconds > user.profile.maxWalkMinutes * 60) {
         notices.add('A stop exceeded your maximum walking time.'); continue;
       }
-      const warnings = [...drive.warnings, ...walk.warnings, 'Stopping permission, property access, crossings, and sidewalk accessibility are unverified.'];
+      const warnings = [...drive.warnings, ...walk.warnings, candidate.source === 'public'
+        ? candidate.publicStopStatus === 'VERIFIED'
+          ? 'The public stop was reviewed. Walking-route accessibility and any adjusted road arrival point are not covered by that review.'
+          : 'Unverified public stop: submitted by a community member. Stopping permission, access, and accessibility have not been verified.'
+        : 'Stopping permission, property access, crossings, and sidewalk accessibility are unverified.'];
       if (stepFree) warnings.push('A step-free route could not be verified. Review the path before confirming.');
       const moved = candidate.source !== 'suggested' && distanceMeters(asLatLng(stopPoint), asLatLng(candidate.point)) > 5;
       if (moved) warnings.push('The preview pin was adjusted to the mapped road arrival point.');
-      options.push({ id: `${candidate.source}:${stopPoint.coordinates.map(n => n.toFixed(6)).join(',')}`, stopPoint,
+      options.push({ id: candidate.publicStopId ? `public:${candidate.publicStopId}` : `${candidate.source}:${stopPoint.coordinates.map(n => n.toFixed(6)).join(',')}`, stopPoint, publicStopId: candidate.publicStopId, publicStopStatus: candidate.publicStopStatus,
         source: candidate.source, priority: candidate.priority, name: candidate.name, instructions: candidate.instructions, walkSeconds, walk,
         drive: input.origin ? drive : undefined, warnings: [...new Set(warnings)] });
     } catch (error) {

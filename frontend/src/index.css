@@ -68,3 +68,58 @@
     @apply grid size-9 place-items-center rounded-xl border-2 bg-surface text-base shadow-[var(--shadow-float)];
   }
 }
+
+/* Shared curb stops use compact car signs; destination labels stay text-based. */
+.public-stop-pin {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 2px solid #93a9bf;
+  border-radius: 50%;
+  background: #132639;
+  color: #cbe8fa;
+  box-shadow: 0 3px 10px #0007;
+  cursor: pointer;
+}
+.public-stop-pin[data-selected='true'] {
+  border-color: #ffb547;
+  color: #ffcf80;
+  box-shadow: 0 0 0 4px #ffb54740, 0 3px 10px #0007;
+}
+.public-stop-status {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border: 2px solid #132639;
+  border-radius: 50%;
+  background: #ffb547;
+  color: #101b25;
+  font: 800 10px/1 system-ui;
+}
+.public-stop-pin[data-status='VERIFIED'] .public-stop-status { background: #2ee6d6; }
+.public-stop-pin[data-status='DISPUTED'] .public-stop-status { background: #ff5d5d; }
+.public-stop-caption {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 9px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 200px;
+  padding: 6px 10px;
+  border: 1px solid #637a91;
+  border-radius: 8px;
+  background: #132639;
+  color: #eef7ff;
+  font: 600 11px/1.4 system-ui;
+  text-align: center;
+  pointer-events: none;
+}
+.public-stop-pin:hover .public-stop-caption,
+.public-stop-pin[data-selected='true'] .public-stop-caption { display: block; }
