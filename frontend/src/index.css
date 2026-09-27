@@ -1,27 +1,53 @@
 @import 'tailwindcss';
 
-/* Design tokens: Waymo-inspired dark theme. Use as Tailwind classes,
-   e.g. bg-surface, text-muted, border-line, bg-shared, text-closed. */
+/* Design tokens: Waymo-inspired frosted-glass dark theme. Use as Tailwind
+   classes, e.g. bg-surface, text-muted, border-line, bg-shared, text-closed. */
 @theme {
   --font-sans: 'Manrope', system-ui, 'Segoe UI', Roboto, sans-serif;
 
-  --color-ink: #0b0d10; /* page / map background */
-  --color-surface: #14171c; /* sheets, panels */
-  --color-raised: #1c2027; /* inputs, cards */
-  --color-high: #262b34; /* active states, tracks */
-  --color-line: rgb(255 255 255 / 0.08);
-  --color-fg: #eef1f5;
-  --color-muted: #8d97a5;
+  --color-ink: #070a0e; /* page background behind everything */
+  --color-surface: rgb(16 20 26 / 0.9); /* panels, sheets, pills: mostly solid, light blur (see .bg-surface below) */
+  --color-raised: rgb(255 255 255 / 0.05); /* inputs, cards on glass */
+  --color-high: rgb(255 255 255 / 0.1); /* active states, tracks */
+  --color-line: rgb(255 255 255 / 0.1);
+  --color-fg: #eef2f6;
+  --color-muted: #93a0b0;
 
-  --color-accent: #2ee6d6; /* primary action, route */
-  --color-accent-ink: #04201e;
+  --color-accent: #2ee6d6; /* Waymo teal: primary action, route */
+  --color-accent-2: #3b8cff; /* Waymo blue: gradient partner */
+  --color-accent-ink: #03211f;
   --color-shared: #2ee6d6; /* default zones from the design team */
   --color-personal: #a78bfa; /* the signed-in user's own zones */
   --color-closed: #ff5d5d; /* closed roads */
   --color-selected: #ffb547; /* currently selected zone */
 
   --radius-sheet: 28px;
-  --shadow-float: 0 12px 40px rgb(0 0 0 / 0.45);
+  --shadow-float: 0 18px 50px rgb(0 0 0 / 0.45);
+  --shadow-glow: 0 6px 18px rgb(46 230 214 / 0.18);
+
+  --animate-ping-soft: ping-soft 2.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+  --animate-drift: drift 18s ease-in-out infinite alternate;
+
+  @keyframes ping-soft {
+    0% {
+      transform: scale(0.6);
+      opacity: 0.55;
+    }
+    80%,
+    100% {
+      transform: scale(1.9);
+      opacity: 0;
+    }
+  }
+
+  @keyframes drift {
+    from {
+      transform: translate3d(-4%, -2%, 0) scale(1);
+    }
+    to {
+      transform: translate3d(4%, 3%, 0) scale(1.08);
+    }
+  }
 }
 
 @layer base {
@@ -52,10 +78,33 @@
     outline: 2px solid var(--color-accent);
     outline-offset: 2px;
   }
+
+  option {
+    background: #10141a;
+  }
 }
 
-/* Map marker styles (markers render as plain HTML inside the map). */
 @layer components {
+  /* Panels are mostly solid; a light blur keeps the map faintly visible at the edges. */
+  .bg-surface {
+    background-image: linear-gradient(180deg, rgb(255 255 255 / 0.03), rgb(255 255 255 / 0) 40%);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+  }
+
+  /* Waymo teal → blue, for primary buttons, logo mark and avatars. */
+  .bg-brand {
+    background-image: linear-gradient(135deg, var(--color-accent), var(--color-accent-2));
+  }
+
+  .text-brand {
+    background-image: linear-gradient(135deg, var(--color-accent), var(--color-accent-2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* Map markers (they render as plain HTML inside the map). */
   .pin-label {
     @apply rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-extrabold tracking-wide shadow-[var(--shadow-float)];
   }

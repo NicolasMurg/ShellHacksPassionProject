@@ -16,7 +16,7 @@ export function AccountMenu({ onSignIn, onPreferences, onEditZones, onReportClos
 
   if (!user) {
     return (
-      <Button variant="ghost" className="bg-surface shadow-[var(--shadow-float)]" onClick={onSignIn}>
+      <Button variant="ghost" className="border-line bg-surface shadow-[var(--shadow-float)]" onClick={onSignIn}>
         Sign in
       </Button>
     )
@@ -51,7 +51,7 @@ export function AccountMenu({ onSignIn, onPreferences, onEditZones, onReportClos
         aria-expanded={open}
         aria-label="Account"
         onClick={() => setOpen((o) => !o)}
-        className="grid size-11 place-items-center rounded-full bg-gradient-to-br from-accent to-[#2a8cff] font-extrabold text-accent-ink shadow-[var(--shadow-float)]"
+        className="grid size-11 place-items-center rounded-full bg-brand font-extrabold text-accent-ink shadow-[var(--shadow-float)]"
       >
         {initials || '?'}
       </button>

@@ -1,6 +1,20 @@
 import { distanceMeters, distanceToPath } from './geo'
 import type { DoorOption, Entrance, LatLng, RoadClosure, StopOption, TripKind, WalkingProfile, Zone } from './types'
-import { walkSeconds } from './walking'
+import { walkSeconds, walkSecondsForPath } from './walking'
+
+/** Real walking distance in meters between two points (campus footpaths), if known. */
+export type WalkMeters = (from: LatLng, to: LatLng) => number | undefined
+
+function estimateWalk(
+  walkMeters: WalkMeters | undefined,
+  from: LatLng,
+  to: LatLng,
+  profile: WalkingProfile | undefined,
+  opts: { floors: number; stairs: boolean },
+): number {
+  const meters = walkMeters?.(from, to)
+  return meters !== undefined ? walkSecondsForPath(meters, profile, opts) : walkSeconds(distanceMeters(from, to), profile, opts)
+}
 
 // Ranks the zones for a destination. The backend can do the same with real
 // walking routes (Google Routes API); this runs instantly in the browser.
@@ -32,8 +46,9 @@ export function rankStops(args: {
   stepFree: boolean
   profile?: WalkingProfile
   closures: RoadClosure[]
+  walkMeters?: WalkMeters
 }): StopOption[] {
-  const { zones, entrances, buildingId, room, kind, stepFree, profile, closures } = args
+  const { zones, entrances, buildingId, room, kind, stepFree, profile, closures, walkMeters } = args
 
   let candidates = zones
     .filter((z) => z.buildingId === buildingId && z.kinds.includes(kind))
@@ -61,7 +76,7 @@ export function rankStops(args: {
         if (stepFree) penalty += 1800
       }
 
-      const seconds = walkSeconds(distanceMeters(zone.stopPoint, entrance.location), profile, {
+      const seconds = estimateWalk(walkMeters, zone.stopPoint, entrance.location, profile, {
         floors: floorOf(room),
         stairs: !entrance.accessible,
       })
@@ -85,8 +100,9 @@ export function rankDoors(args: {
   origin: LatLng
   stepFree: boolean
   profile?: WalkingProfile
+  walkMeters?: WalkMeters
 }): DoorOption[] {
-  const { room, origin, stepFree, profile } = args
+  const { room, origin, stepFree, profile, walkMeters } = args
   let doors = args.entrances
   const forRoom = doors.filter((e) => servesRoom(e, room))
   if (forRoom.length > 0) doors = forRoom
@@ -95,7 +111,7 @@ export function rankDoors(args: {
   return doors
     .map((entrance) => {
       const warnings = entrance.accessible ? [] : ['Stairs at this entrance']
-      const seconds = walkSeconds(distanceMeters(origin, entrance.location), profile, {
+      const seconds = estimateWalk(walkMeters, origin, entrance.location, profile, {
         floors: floorOf(room),
         stairs: !entrance.accessible,
       })

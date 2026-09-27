@@ -1,5 +1,23 @@
-import type { ButtonHTMLAttributes, ReactNode } from 'react'
+import { useId, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import { cx } from './cx'
+
+/** Doorstep logo: a map pin with a door in it, in the Waymo teal → blue gradient. */
+export function LogoMark({ className = 'size-6' }: { className?: string }) {
+  const id = useId()
+  return (
+    <svg aria-hidden viewBox="0 0 24 24" className={className}>
+      <defs>
+        <linearGradient id={id} x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#2ee6d6" />
+          <stop offset="1" stopColor="#3b8cff" />
+        </linearGradient>
+      </defs>
+      <path d="M12 1.5a8 8 0 0 0-8 8c0 5.6 8 13 8 13s8-7.4 8-13a8 8 0 0 0-8-8Z" fill={`url(#${id})`} />
+      <rect x="9.25" y="5.5" width="5.5" height="8" rx="1.2" fill="#03211f" />
+      <circle cx="13.1" cy="9.8" r="0.8" fill="#2ee6d6" />
+    </svg>
+  )
+}
 
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'ghost' | 'danger' | 'quiet' }
@@ -9,9 +27,9 @@ export function Button({ variant = 'ghost', className, ...rest }: ButtonProps) {
     <button
       type="button"
       className={cx(
-        'inline-flex h-11 items-center justify-center gap-2 rounded-full px-4 font-bold transition-colors disabled:opacity-40',
-        variant === 'primary' && 'bg-accent text-accent-ink hover:brightness-110',
-        variant === 'ghost' && 'border border-line bg-high text-fg hover:border-accent',
+        'inline-flex h-11 items-center justify-center gap-2 rounded-full px-5 font-bold transition-[filter,border-color,transform] active:scale-[0.98] disabled:opacity-40 disabled:active:scale-100',
+        variant === 'primary' && 'bg-brand text-accent-ink shadow-[var(--shadow-glow)] hover:brightness-110',
+        variant === 'ghost' && 'border border-line bg-raised text-fg hover:border-accent/60',
         variant === 'danger' && 'border border-closed/40 bg-closed/10 text-closed hover:bg-closed/20',
         variant === 'quiet' && 'text-muted hover:text-fg',
         className,
@@ -27,7 +45,7 @@ export function Switch({ checked, onChange, label }: { checked: boolean; onChang
       <input type="checkbox" className="peer sr-only" checked={checked} onChange={(e) => onChange(e.target.checked)} />
       <span
         aria-hidden
-        className="relative h-[26px] w-[42px] rounded-full bg-high transition-colors after:absolute after:left-[3px] after:top-[3px] after:size-5 after:rounded-full after:bg-fg after:transition-transform peer-checked:bg-accent peer-checked:after:translate-x-4 peer-checked:after:bg-accent-ink peer-focus-visible:outline-2 peer-focus-visible:outline-accent"
+        className="relative h-[26px] w-[42px] rounded-full border border-line bg-high transition-colors after:absolute after:left-[2px] after:top-[2px] after:size-5 after:rounded-full after:bg-fg after:shadow-md after:transition-transform peer-checked:border-transparent peer-checked:bg-accent peer-checked:after:translate-x-4 peer-checked:after:bg-white peer-focus-visible:outline-2 peer-focus-visible:outline-accent"
       />
       <span className="font-semibold">{label}</span>
     </label>
@@ -46,7 +64,7 @@ export function Segmented<T extends string>({
   label: string
 }) {
   return (
-    <div role="radiogroup" aria-label={label} className="flex rounded-full bg-raised p-1">
+    <div role="radiogroup" aria-label={label} className="flex rounded-full border border-line bg-raised p-1">
       {options.map((o) => (
         <button
           key={o.value}
@@ -56,7 +74,9 @@ export function Segmented<T extends string>({
           onClick={() => onChange(o.value)}
           className={cx(
             'h-10 flex-1 rounded-full px-3 font-semibold transition-colors',
-            value === o.value ? 'bg-high text-fg' : 'text-muted hover:text-fg',
+            value === o.value
+              ? 'bg-accent/15 text-accent ring-1 ring-inset ring-accent/40'
+              : 'text-muted hover:text-fg',
           )}
         >
           {o.label}
@@ -77,16 +97,16 @@ export function Field({ label, hint, children }: { label: string; hint?: string;
 }
 
 export const inputClass =
-  'h-11 w-full rounded-xl border border-line bg-raised px-3.5 font-medium placeholder:text-muted focus:border-accent focus:outline-none'
+  'h-12 w-full rounded-2xl border border-line bg-raised px-4 font-medium transition-[border-color,box-shadow] placeholder:text-muted/70 focus:border-accent/70 focus:shadow-[0_0_0_4px_rgb(46_230_214/0.12)] focus:outline-none'
 
 export function Notice({ tone = 'info', children }: { tone?: 'info' | 'error' | 'success'; children: ReactNode }) {
   return (
     <p
       className={cx(
-        'm-0 rounded-xl px-3.5 py-2.5 text-sm',
-        tone === 'info' && 'bg-raised text-muted',
-        tone === 'error' && 'bg-closed/10 text-closed',
-        tone === 'success' && 'bg-accent/10 text-accent',
+        'm-0 rounded-2xl border px-4 py-3 text-sm',
+        tone === 'info' && 'border-line bg-raised text-muted',
+        tone === 'error' && 'border-closed/25 bg-closed/10 text-closed',
+        tone === 'success' && 'border-accent/25 bg-accent/10 text-accent',
       )}
     >
       {children}
@@ -120,15 +140,18 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
   )
 }
 
-/** Bottom sheet on phones, floating side panel on desktop. */
+/**
+ * Floating glass card: above the tab bar on phones, a side panel on desktop.
+ * The phone offset leaves room for the floating TabBar pill.
+ */
 export function Sheet({ expanded, onToggle, children }: { expanded: boolean; onToggle: () => void; children: ReactNode }) {
   return (
     <section
       aria-label="Doorstep panel"
       className={cx(
-        'absolute inset-x-0 bottom-0 z-20 flex flex-col rounded-t-[var(--radius-sheet)] border-t border-line bg-surface shadow-[var(--shadow-float)] transition-[max-height] duration-300',
-        expanded ? 'max-h-[72vh]' : 'max-h-[30vh]',
-        'min-[900px]:inset-y-4 min-[900px]:left-4 min-[900px]:right-auto min-[900px]:max-h-none min-[900px]:w-[420px] min-[900px]:rounded-[var(--radius-sheet)] min-[900px]:border',
+        'absolute inset-x-3 bottom-[calc(84px+env(safe-area-inset-bottom))] z-20 flex flex-col rounded-[var(--radius-sheet)] border border-line bg-surface shadow-[var(--shadow-float)] transition-[max-height] duration-300',
+        expanded ? 'max-h-[64vh]' : 'max-h-[26vh]',
+        'min-[900px]:inset-y-4 min-[900px]:left-4 min-[900px]:right-auto min-[900px]:max-h-none min-[900px]:w-[420px]',
       )}
     >
       <button

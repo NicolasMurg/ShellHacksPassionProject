@@ -6,8 +6,11 @@ import { distanceMeters, rect } from '../geo'
 import { visibleZones } from '../planner'
 import type { Building, Entrance, LatLng, RoadClosure, User, Zone } from '../types'
 
-/** Buildings, their entrances, and the shared zones (generated curbs + design-team zones). */
-export function useCampus() {
+/**
+ * Buildings, their entrances, and the shared zones (generated curbs + design-team zones).
+ * Curbs are generated for the destination building only, as you pick one (and cached).
+ */
+export function useCampus(destinationId?: string) {
   const [buildings, setBuildings] = useState<Building[]>([])
   const [designZones, setDesignZones] = useState<Zone[]>([])
   const [generated, setGenerated] = useState<Zone[]>([])
@@ -27,12 +30,13 @@ export function useCampus() {
   const covered = useMemo(() => new Set(designZones.map((z) => z.entranceId)), [designZones])
 
   // In mock mode the frontend generates curbs; with the real backend, /api/zones already includes them.
+  const destination = buildings.find((b) => b.id === destinationId)
   useEffect(() => {
-    if (!api.USE_MOCK || !routes || buildings.length === 0) return
+    if (!api.USE_MOCK || !routes || !destination) return
     let cancelled = false
     void generateCurbs(
       new routes.DirectionsService(),
-      buildings,
+      [destination],
       covered,
       (zone) => setGenerated((g) => [...g.filter((z) => z.id !== zone.id), zone]),
       () => cancelled,
@@ -40,7 +44,7 @@ export function useCampus() {
     return () => {
       cancelled = true
     }
-  }, [routes, buildings, covered])
+  }, [routes, destination, covered])
 
   const entrances = useMemo(() => {
     const byId = new Map<string, Entrance>()
@@ -49,8 +53,9 @@ export function useCampus() {
   }, [buildings])
 
   const defaults = useMemo(() => [...designZones, ...generated], [designZones, generated])
-  const expected = [...entrances.keys()].filter((id) => !covered.has(id)).length
-  const generating = api.USE_MOCK && buildings.length > 0 && generated.length < expected
+  const expected = destination ? destination.entrances.filter((e) => !covered.has(e.id)).length : 0
+  const have = destination ? generated.filter((z) => z.buildingId === destination.id).length : 0
+  const generating = api.USE_MOCK && !!destination && have < expected
 
   return { buildings, entrances, defaults, generating, error }
 }
@@ -67,7 +72,19 @@ export function useZones(defaults: Zone[], buildings: Building[], user?: User, t
       .catch(() => setMine({ token, zones: [] }))
   }, [token])
 
-  const personal = useMemo(() => (token && mine.token === token ? mine.zones : []), [mine, token])
+  const personal = useMemo(() => {
+    const saved = token && mine.token === token ? mine.zones : []
+    // Spots saved against doors that no longer exist (e.g. before the campus data
+    // was updated) get relinked to the closest real door.
+    const doors = buildings.flatMap((b) => b.entrances)
+    if (doors.length === 0) return saved
+    const known = new Set(doors.map((d) => d.id))
+    return saved.map((z) => {
+      if (known.has(z.entranceId)) return z
+      const closest = doors.reduce((a, b) => (distanceMeters(z.stopPoint, a.location) <= distanceMeters(z.stopPoint, b.location) ? a : b))
+      return { ...z, buildingId: closest.buildingId, entranceId: closest.id }
+    })
+  }, [mine, token, buildings])
   const zones = useMemo(() => visibleZones(defaults, personal), [defaults, personal])
 
   const upsert = useCallback(

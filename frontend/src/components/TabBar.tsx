@@ -4,7 +4,7 @@ import { cx } from './cx'
 export type Tab = 'preferences' | 'map'
 
 const icon = (children: ReactNode) => (
-  <svg aria-hidden viewBox="0 0 24 24" className="size-6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg aria-hidden viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     {children}
   </svg>
 )
@@ -32,11 +32,21 @@ const TABS: { id: Tab; label: string; icon: ReactNode }[] = [
   },
 ]
 
-/** The bar along the bottom of the screen that switches between the main pages. */
+/**
+ * Floating glass pill that switches between the main pages. Centered on
+ * phones; on desktop it centers in the map area to the right of the side panel.
+ */
 export function TabBar({ tab, onTab }: { tab: Tab; onTab: (tab: Tab) => void }) {
   return (
-    <nav aria-label="Main" className="z-30 shrink-0 border-t border-line bg-surface pb-[env(safe-area-inset-bottom)]">
-      <div className="mx-auto flex max-w-md">
+    <nav
+      aria-label="Main"
+      className={cx(
+        'absolute bottom-[max(12px,env(safe-area-inset-bottom))] left-1/2 z-50 -translate-x-1/2',
+        // On the map (desktop), center it in the space right of the side panel.
+        tab === 'map' && 'min-[900px]:left-[calc(452px+(100%-452px)/2)]',
+      )}
+    >
+      <div className="flex gap-1 rounded-full border border-line bg-surface p-1.5 shadow-[var(--shadow-float)]">
         {TABS.map((t) => (
           <button
             key={t.id}
@@ -44,8 +54,10 @@ export function TabBar({ tab, onTab }: { tab: Tab; onTab: (tab: Tab) => void }) 
             aria-current={tab === t.id ? 'page' : undefined}
             onClick={() => onTab(t.id)}
             className={cx(
-              'flex h-16 flex-1 flex-col items-center justify-center gap-1 text-xs font-bold transition-colors',
-              tab === t.id ? 'text-accent' : 'text-muted hover:text-fg',
+              'flex h-12 items-center gap-2 rounded-full px-5 text-sm font-bold transition-all',
+              tab === t.id
+                ? 'bg-accent/15 text-accent ring-1 ring-inset ring-accent/40'
+                : 'text-muted hover:text-fg',
             )}
           >
             {t.icon}

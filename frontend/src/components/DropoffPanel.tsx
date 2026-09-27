@@ -7,7 +7,7 @@ import { StreetViewPreview } from './StreetViewPreview'
 import { cx } from './cx'
 import { Button, Notice, Segmented, Switch } from './ui'
 
-const QUICK_PICKS = ['GC 150', 'GC 243', 'Green Library 420', 'PC 110']
+const QUICK_PICKS = ['GC 150', 'Green Library 420', 'CASE 241', 'PC 110']
 
 type Props = {
   user?: User
@@ -19,6 +19,9 @@ type Props = {
   selectedDoorId?: string
   onSelectDoor: (entranceId: string) => void
   walkStart?: { fromGps: boolean; label: string }
+  /** Start in-app navigation: walk to a door (walk mode) or the confirmed car trip. */
+  onStartWalk: (entranceId: string) => void
+  onStartTrip: () => void
   stepFree: boolean
   onStepFree: (v: boolean) => void
   options: StopOption[]
@@ -165,12 +168,21 @@ export function DropoffPanel(p: Props) {
                 rank={i}
                 selected={d.entrance.id === p.selectedDoorId}
                 onSelect={() => p.onSelectDoor(d.entrance.id)}
+                onStart={() => p.onStartWalk(d.entrance.id)}
               />
             ))}
           </ol>
         )
       ) : confirmed ? (
-        <Confirmed option={confirmed} kind={kind} user={p.user} drive={p.drive} onChange={() => p.onConfirm(undefined)} onFeedback={p.onFeedback} />
+        <Confirmed
+          option={confirmed}
+          kind={kind}
+          user={p.user}
+          drive={p.drive}
+          onChange={() => p.onConfirm(undefined)}
+          onStart={p.onStartTrip}
+          onFeedback={p.onFeedback}
+        />
       ) : (
         p.destination &&
         (p.options.length === 0 ? (
@@ -201,14 +213,15 @@ function DoorCard({
   rank,
   selected,
   onSelect,
+  onStart,
 }: {
   option: DoorOption
   rank: number
   selected: boolean
   onSelect: () => void
+  onStart: () => void
 }) {
   const { entrance } = option
-  const { lat, lng } = entrance.location
   return (
     <li>
       <div
@@ -243,14 +256,9 @@ function DoorCard({
         {selected && (
           <div className="mt-3.5 flex flex-col gap-2.5" onClick={(e) => e.stopPropagation()}>
             <StreetViewPreview target={entrance.location} />
-            <a
-              href={`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=walking`}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex h-11 items-center justify-center rounded-full bg-accent font-bold text-accent-ink hover:brightness-110"
-            >
+            <Button variant="primary" className="h-12" onClick={onStart}>
               Start walking
-            </a>
+            </Button>
           </div>
         )}
       </div>
@@ -302,7 +310,7 @@ function OptionCard({
         <p className="m-0 mt-2 text-sm">{option.reason}</p>
         {drive && (
           <p className="m-0 mt-2 text-sm font-semibold text-accent">
-            🚗 {formatDrive(drive.seconds)} {drive.fromGps ? 'from you' : 'from the SW 8th St entrance'}
+            🚗 {formatDrive(drive.seconds)} {drive.fromGps ? 'from you' : 'from a demo start near campus'}
           </p>
         )}
         {option.warnings.length > 0 && (
@@ -333,6 +341,7 @@ function Confirmed({
   user,
   drive,
   onChange,
+  onStart,
   onFeedback,
 }: {
   option: StopOption
@@ -340,6 +349,7 @@ function Confirmed({
   user?: User
   drive?: Props['drive']
   onChange: () => void
+  onStart: () => void
   onFeedback: (f: 'faster' | 'right' | 'slower') => void
 }) {
   const [thanked, setThanked] = useState(false)
@@ -360,14 +370,9 @@ function Confirmed({
         <Button className="flex-1" onClick={onChange}>
           Change
         </Button>
-        <a
-          href={`https://www.google.com/maps/search/?api=1&query=${zone.stopPoint.lat},${zone.stopPoint.lng}`}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex h-11 flex-1 items-center justify-center rounded-full border border-line bg-high font-bold hover:border-accent"
-        >
-          Open in Maps
-        </a>
+        <Button variant="primary" className="flex-[2]" onClick={onStart}>
+          {kind === 'dropoff' ? 'Start trip' : 'Walk to pickup'}
+        </Button>
       </div>
       {user && (
         <div className="border-t border-line pt-3">

@@ -1,24 +1,27 @@
 import { APIProvider, useMap } from '@vis.gl/react-google-maps'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AccountMenu } from './components/Account'
 import { ClosurePanel } from './components/ClosurePanel'
 import { DropoffPanel } from './components/DropoffPanel'
 import { EditPanel } from './components/EditPanel'
 import { LayerControl } from './components/LayerControl'
 import { MapCanvas, type Tool } from './components/MapCanvas'
+import { NavBanner, NavPanel } from './components/NavPanel'
 import { PreferencesPage } from './components/PreferencesPage'
 import { TabBar, type Tab } from './components/TabBar'
-import { Sheet } from './components/ui'
+import { LogoMark, Sheet } from './components/ui'
 import { useMapLayers } from './mapLayers'
-import { floorOf, rankDoors, rankStops } from './planner'
+import { floorOf, rankDoors, rankStops, type WalkMeters } from './planner'
 import { parseDestination, type Destination } from './search'
 import { AuthProvider, useAuth } from './state/auth'
 import { CAMPUS_CENTER, CAMPUS_GATE, WALK_DEMO_START } from './data/campus'
 import { distanceMeters } from './geo'
 import { useCampus, useClosures, useZones } from './state/data'
-import { useGeolocation, useRoute, type Geo } from './state/routing'
+import { useNavigation, type NavLeg } from './state/navigation'
+import { useCampusGraph, useGeolocation, useRoute, type Geo } from './state/routing'
+import { inCampus, routeWalk } from './walkRouter'
 import type { DoorOption, LatLng, TravelMode, TripKind, Zone } from './types'
-import { learn, needsStepFree, walkSecondsForPath } from './walking'
+import { learn, needsStepFree, walkingSpeed, walkSecondsForPath } from './walking'
 
 const API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined
 
@@ -45,7 +48,8 @@ type Panel = 'dropoff' | 'edit' | 'closure'
 
 function Doorstep() {
   const { user, token, restoring, saveProfile } = useAuth()
-  const campus = useCampus()
+  const [destination, setDestination] = useState<Destination>()
+  const campus = useCampus(destination?.building.id)
   const zoneStore = useZones(campus.defaults, campus.buildings, user, token)
   const closureStore = useClosures(token, user?.name)
 
@@ -58,7 +62,6 @@ function Doorstep() {
   const [tab, setTab] = useState<Tab>(() => (user || restoring ? 'map' : 'preferences'))
 
   // Drop-off planning
-  const [destination, setDestination] = useState<Destination>()
   const [searchError, setSearchError] = useState<string>()
   const [mode, setMode] = useState<TravelMode>('dropoff')
   const [stepFreeChoice, setStepFreeChoice] = useState<boolean>()
@@ -74,6 +77,16 @@ function Doorstep() {
   const stepFree = stepFreeChoice ?? needsStepFree(user?.profile)
   const { zones } = zoneStore
 
+  // Real walking distances over campus footpaths, so "closest door" means the shortest walk.
+  const campusGraph = useCampusGraph()
+  const walkMeters = useMemo<WalkMeters | undefined>(
+    () =>
+      campusGraph
+        ? (a, b) => (inCampus(campusGraph, a) && inCampus(campusGraph, b) ? routeWalk(campusGraph, a, b, { stepFree })?.meters : undefined)
+        : undefined,
+    [campusGraph, stepFree],
+  )
+
   const options = useMemo(
     () =>
       destination && !walking
@@ -86,9 +99,10 @@ function Doorstep() {
             stepFree,
             profile: user?.profile,
             closures: closureStore.closures,
+            walkMeters,
           })
         : [],
-    [destination, walking, zones, campus.entrances, kind, stepFree, user?.profile, closureStore.closures],
+    [destination, walking, zones, campus.entrances, kind, stepFree, user?.profile, closureStore.closures, walkMeters],
   )
 
   const activeZoneId =
@@ -107,7 +121,7 @@ function Doorstep() {
 
   const doors =
     destination && walking
-      ? rankDoors({ entrances: destination.building.entrances, room: destination.room, origin: walkStart.location, stepFree, profile: user?.profile })
+      ? rankDoors({ entrances: destination.building.entrances, room: destination.room, origin: walkStart.location, stepFree, profile: user?.profile, walkMeters })
       : []
   const activeDoor =
     panel === 'dropoff' && walking ? (doors.find((d) => d.entrance.id === selectedDoorId) ?? doors[0]) : undefined
@@ -118,7 +132,7 @@ function Doorstep() {
   const drive = useRoute('DRIVING', activeOption && driveFrom, activeOption?.zone.stopPoint)
   const walkFrom = activeDoor ? walkStart.location : activeOption?.zone.stopPoint
   const walkTo = (activeDoor ?? activeOption)?.entrance.location
-  const walk = useRoute('WALKING', walkFrom, walkTo)
+  const walk = useRoute('WALKING', walkFrom, walkTo, { stepFree })
 
   // Once Google has the real walking path, re-estimate the selected option with its true length.
   const refine = <T extends DoorOption>(o: T): T =>
@@ -127,6 +141,77 @@ function Doorstep() {
       : o
   const shownOptions = options.map((o) => (o === activeOption ? refine(o) : o))
   const shownDoors = doors.map((d) => (d === activeDoor ? refine(d) : d))
+
+  // In-app navigation. A trip is one or more legs (ride to the curb, then walk to the door).
+  const [trip, setTrip] = useState<{ legs: NavLeg[]; index: number; destinationLabel: string; door?: LatLng }>()
+  const [simulateChoice, setSimulateChoice] = useState<boolean>()
+  const [voice, setVoice] = useState(false)
+  const [follow, setFollow] = useState(true)
+  // Off campus (or no GPS) there's nothing real to track, so play the trip by default.
+  const simulate = simulateChoice ?? !onCampus
+  const leg = trip?.legs[trip.index]
+  const nav = useNavigation({ leg, gps: geo.position, walkSpeedMps: walkingSpeed(user?.profile), simulate, stepFree })
+
+  const startTrip = (legs: NavLeg[], destinationLabel: string, door?: LatLng) => {
+    setTrip({ legs, index: 0, destinationLabel, door })
+    setSimulateChoice(undefined)
+    setFollow(true)
+    setExpanded(true)
+  }
+  const startWalk = (entranceId: string) => {
+    const door = destination?.building.entrances.find((e) => e.id === entranceId)
+    if (!door) return
+    startTrip([{ travel: 'WALKING', from: walkStart.location, to: door.location, toLabel: door.label, stage: 'Walk to door' }], door.label, door.location)
+  }
+
+  // Where the car picks you up for a drop-off trip: one of your own pickup spots
+  // near you, otherwise the nearest curb a car can reach (from Google's route start).
+  const PICKUP_SEARCH_M = 300
+  const myPickupSpot = geo.position
+    ? zoneStore.personal
+        .filter((z) => !z.hidden && z.kinds.includes('pickup') && distanceMeters(geo.position!, z.stopPoint) < PICKUP_SEARCH_M)
+        .sort((a, b) => distanceMeters(geo.position!, a.stopPoint) - distanceMeters(geo.position!, b.stopPoint))[0]
+    : undefined
+  const pickupPoint = myPickupSpot?.stopPoint ?? (geo.position ? drive?.roadStart : undefined)
+
+  const startCarTrip = () => {
+    const option = options.find((o) => o.zone.id === confirmedZoneId)
+    if (!option) return
+    const { zone, entrance } = option
+    if (kind === 'dropoff') {
+      const legs: NavLeg[] = []
+      // You're not standing on a road (e.g. inside a building): walk to the pickup curb first.
+      if (geo.position && pickupPoint && distanceMeters(geo.position, pickupPoint) > 25) {
+        legs.push({
+          travel: 'WALKING',
+          from: geo.position,
+          to: pickupPoint,
+          toLabel: myPickupSpot ? `your pickup spot (${myPickupSpot.name})` : 'your pickup spot',
+          stage: 'Walk to pickup',
+        })
+      }
+      legs.push(
+        { travel: 'DRIVING', from: pickupPoint ?? driveFrom, to: zone.stopPoint, toLabel: zone.name, stage: 'Ride to curb' },
+        { travel: 'WALKING', from: zone.stopPoint, to: entrance.location, toLabel: entrance.label, stage: 'Walk to door' },
+      )
+      startTrip(legs, entrance.label, entrance.location)
+    } else {
+      // Pickup: you walk out to where the car will meet you.
+      startTrip(
+        [{ travel: 'WALKING', from: walkStart.location, to: zone.stopPoint, toLabel: `pickup spot (${zone.name.toLowerCase()})`, stage: 'Walk to pickup' }],
+        'Your pickup spot',
+        zone.stopPoint,
+      )
+    }
+  }
+
+  // Reached the end of a leg with more to go (e.g. the car reached the curb): continue on foot.
+  const legArrived = !!nav?.arrived && !!trip && trip.index < trip.legs.length - 1
+  useEffect(() => {
+    if (!legArrived) return
+    const id = setTimeout(() => setTrip((t) => (t ? { ...t, index: t.index + 1 } : t)), 2000)
+    return () => clearTimeout(id)
+  }, [legArrived])
 
   const requireUser = (then: () => void) => {
     if (user) then()
@@ -144,9 +229,22 @@ function Doorstep() {
 
   const search = (text: string) => {
     try {
-      setDestination(parseDestination(text, campus.buildings))
+      // Your own saved spots win: typing "My apartment" goes straight to that spot.
+      const q = text.trim().toLowerCase()
+      const spot = zoneStore.personal.find((z) => !z.hidden && z.name.trim().length > 2 && q.includes(z.name.trim().toLowerCase()))
+      const spotBuilding = spot && campus.buildings.find((b) => b.id === spot.buildingId)
+      if (spot && spotBuilding) {
+        setDestination({ building: spotBuilding, room: text.match(/\b([a-z]?\d{2,4}[a-z]?)\b/i)?.[1]?.toUpperCase() ?? '' })
+        setSelectedZoneId(spot.id)
+      } else {
+        const found = parseDestination(text, campus.buildings)
+        // Several buildings can share a name (13 "University Apartments"): prefer one you have a spot at.
+        const sameName = campus.buildings.filter((b) => b.name === found.building.name)
+        const withSpot = sameName.find((b) => zoneStore.personal.some((z) => !z.hidden && z.buildingId === b.id))
+        setDestination(withSpot ? { ...found, building: withSpot } : found)
+        setSelectedZoneId(undefined)
+      }
       setSearchError(undefined)
-      setSelectedZoneId(undefined)
       setSelectedDoorId(undefined)
       setConfirmedZoneId(undefined)
     } catch (e) {
@@ -190,6 +288,13 @@ function Doorstep() {
         <main className="absolute inset-0" inert={tab !== 'map'}>
       <MapCanvas
         layers={layers}
+        nav={
+          nav?.status === 'active' && leg
+            ? { travel: leg.travel, path: nav.path, traveled: nav.traveled, position: nav.position, heading: nav.heading }
+            : undefined
+        }
+        follow={follow}
+        onUserPan={() => trip && setFollow(false)}
         buildings={campus.buildings}
         entrances={campus.entrances}
         zones={zones}
@@ -200,7 +305,7 @@ function Doorstep() {
         walkMode={walking && panel === 'dropoff'}
         walkStart={activeDoor && !walkStart.fromGps ? walkStart : undefined}
         editingZoneId={editingZone?.source === 'personal' ? editingZone.id : undefined}
-        me={geo.position && { position: geo.position, accuracy: geo.accuracy }}
+        me={geo.position && { position: geo.position, accuracy: geo.accuracy, heading: geo.heading }}
         drivePath={walking ? undefined : drive?.path}
         walkPath={walk?.path ?? (walkFrom && walkTo ? [walkFrom, walkTo] : undefined)}
         editMode={panel === 'edit'}
@@ -218,9 +323,12 @@ function Doorstep() {
         onZoneChange={(z) => void zoneStore.upsert(z)}
       />
 
-      <div className="absolute right-4 top-[max(16px,env(safe-area-inset-top))] z-30 flex flex-col items-end gap-2">
+      {trip && leg && <NavBanner nav={nav} leg={leg} />}
+
+      {/* While navigating on a phone, the instruction banner takes the top of the screen. */}
+      <div className={`absolute right-4 top-[max(16px,env(safe-area-inset-top))] z-30 flex flex-col items-end gap-2 ${trip ? 'max-[899px]:hidden' : ''}`}>
         <div className="flex items-center gap-2">
-          <Legend />
+          {!trip && <Legend />}
           <LayerControl value={layers} onChange={setLayers} />
           <AccountMenu
             onSignIn={() => setTab('preferences')}
@@ -234,13 +342,32 @@ function Doorstep() {
 
       <Sheet expanded={expanded} onToggle={() => setExpanded((v) => !v)}>
         <div className="flex items-center gap-2.5">
-          <span aria-hidden className="size-5 rounded-[6px_6px_6px_2px] bg-gradient-to-br from-accent to-[#2a8cff]" />
+          <LogoMark className="size-6" />
           <span className="text-lg font-extrabold tracking-tight">Doorstep</span>
           <span className="ml-auto text-xs text-muted">the right door, every time</span>
         </div>
 
-        {panel === 'dropoff' && (
+        {trip && (
+          <NavPanel
+            nav={nav}
+            legs={trip.legs}
+            legIndex={trip.index}
+            destinationLabel={trip.destinationLabel}
+            doorLocation={trip.door}
+            simulate={simulate}
+            onSimulate={setSimulateChoice}
+            voice={voice}
+            onVoice={setVoice}
+            following={follow}
+            onRecenter={() => setFollow(true)}
+            onEnd={() => setTrip(undefined)}
+          />
+        )}
+
+        {!trip && panel === 'dropoff' && (
           <DropoffPanel
+            onStartWalk={startWalk}
+            onStartTrip={startCarTrip}
             user={user}
             destination={destination}
             mode={mode}
@@ -273,7 +400,7 @@ function Doorstep() {
           />
         )}
 
-        {panel === 'edit' && user && (
+        {!trip && panel === 'edit' && user && (
           <EditPanel
             buildings={campus.buildings}
             selected={editingZone}
@@ -301,7 +428,7 @@ function Doorstep() {
           />
         )}
 
-        {panel === 'closure' && user && (
+        {!trip && panel === 'closure' && user && (
           <ClosurePanel
             user={user}
             draft={draftClosure}
@@ -319,6 +446,13 @@ function Doorstep() {
             }}
           />
         )}
+
+        <p className="m-0 mt-auto pt-2 text-[11px] text-muted/70">
+          Buildings: FIU campus map · Walkways &amp; doors: ©{' '}
+          <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer" className="underline hover:text-fg">
+            OpenStreetMap contributors
+          </a>
+        </p>
       </Sheet>
         </main>
 
@@ -341,6 +475,7 @@ function LocateButton({ geo }: { geo: Geo }) {
       title={label}
       disabled={!geo.position}
       onClick={() => {
+        geo.enableCompass?.() // iPhone: the compass (for the direction beam) needs a tap to allow
         if (!map || !geo.position) return
         map.panTo(geo.position)
         if ((map.getZoom() ?? 0) < 17) map.setZoom(17)

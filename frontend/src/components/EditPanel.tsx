@@ -1,4 +1,5 @@
-import type { Building, TripKind, Zone } from '../types'
+import { distanceMeters } from '../geo'
+import type { Building, LatLng, TripKind, Zone } from '../types'
 import type { Tool } from './MapCanvas'
 import { Button, Field, Notice, Switch, inputClass } from './ui'
 
@@ -47,12 +48,10 @@ export function EditPanel(p: Props) {
         </Button>
       )}
 
-      {p.selected && selectedBuilding ? (
-        p.selected.source !== 'personal' ? (
-          <DefaultZoneCard zone={p.selected} building={selectedBuilding} onCustomize={p.onCustomize} onHide={p.onHide} />
-        ) : (
-          <ZoneForm zone={p.selected} building={selectedBuilding} onChange={p.onUpdate} onDelete={p.onDelete} onClose={() => p.onSelect(undefined)} />
-        )
+      {p.selected?.source === 'personal' ? (
+        <ZoneForm zone={p.selected} buildings={p.buildings} onChange={p.onUpdate} onDelete={p.onDelete} onClose={() => p.onSelect(undefined)} />
+      ) : p.selected && selectedBuilding ? (
+        <DefaultZoneCard zone={p.selected} building={selectedBuilding} onCustomize={p.onCustomize} onHide={p.onHide} />
       ) : (
         <Notice>Tap any zone on the map to customize it, or pick one of yours below.</Notice>
       )}
@@ -132,15 +131,18 @@ const KINDS: { value: TripKind; label: string }[] = [
   { value: 'pickup', label: 'Pickup' },
 ]
 
+/** How far (rounded) from the car's stop point, for labels like "· 40 m". */
+const away = (from: LatLng, to: LatLng) => `${Math.round(distanceMeters(from, to) / 10) * 10} m`
+
 function ZoneForm({
   zone,
-  building,
+  buildings,
   onChange,
   onDelete,
   onClose,
 }: {
   zone: Zone
-  building: Building
+  buildings: Building[]
   onChange: (z: Zone) => void
   onDelete: (z: Zone) => void
   onClose: () => void
@@ -149,30 +151,60 @@ function ZoneForm({
     const kinds = on ? [...new Set([...zone.kinds, k])] : zone.kinds.filter((x) => x !== k)
     if (kinds.length > 0) onChange({ ...zone, kinds })
   }
-  const door = building.entrances.find((e) => e.id === zone.entranceId)
+
+  // Buildings nearest this spot first: the one you're going to is almost always close by.
+  const byDistance = [...buildings].sort((a, b) => distanceMeters(zone.stopPoint, a.location) - distanceMeters(zone.stopPoint, b.location))
+  const building = buildings.find((b) => b.id === zone.buildingId) ?? byDistance[0]
+  const nearby = byDistance.slice(0, 8)
+  const choices = nearby.includes(building) ? nearby : [building, ...nearby]
+  const doors = [...(building?.entrances ?? [])].sort(
+    (a, b) => distanceMeters(zone.stopPoint, a.location) - distanceMeters(zone.stopPoint, b.location),
+  )
+
+  const pickBuilding = (id: string) => {
+    const next = buildings.find((b) => b.id === id)
+    if (!next) return
+    // Default to that building's door closest to where the car stops.
+    const closest = [...next.entrances].sort(
+      (a, b) => distanceMeters(zone.stopPoint, a.location) - distanceMeters(zone.stopPoint, b.location),
+    )[0]
+    onChange({ ...zone, buildingId: next.id, entranceId: closest?.id ?? zone.entranceId })
+  }
 
   return (
     <div className="flex flex-col gap-3.5 rounded-2xl border border-personal/40 bg-personal/5 p-4">
       <div className="flex items-center justify-between">
-        <p className="m-0 text-xs font-bold text-personal">Your zone · {building.name}</p>
+        <p className="m-0 text-xs font-bold text-personal">Your drop-off spot</p>
         <button type="button" onClick={onClose} className="text-sm text-muted hover:text-fg">
           Close
         </button>
       </div>
       <Notice>Drag the shape or its corners to reshape it. Drag 🚗 to move exactly where the car stops.</Notice>
 
-      <Field label="Zone name">
-        <input className={inputClass} value={zone.name} onChange={(e) => onChange({ ...zone, name: e.target.value })} />
+      <Field label="Name">
+        <input className={inputClass} value={zone.name} placeholder="e.g. My apartment" onChange={(e) => onChange({ ...zone, name: e.target.value })} />
       </Field>
-      <Field label="Door you want to use" hint={door ? `${door.accessible ? '♿ Step-free' : 'Has stairs'}${door.rooms.length ? ` · closest to rooms ${door.rooms.join(', ')}` : ''}` : undefined}>
-        <select className={inputClass} value={zone.entranceId} onChange={(e) => onChange({ ...zone, entranceId: e.target.value })}>
-          {building.entrances.map((e) => (
-            <option key={e.id} value={e.id}>
-              {e.label}
+      <Field label="Use this spot when I'm going to" hint="Search for this building and your car stops here instead of the default curb.">
+        <select className={inputClass} value={building?.id ?? ''} onChange={(e) => pickBuilding(e.target.value)}>
+          {choices.map((b) => (
+            <option key={b.id} value={b.id}>
+              {b.name} ({b.code}) · {away(zone.stopPoint, b.location)}
             </option>
           ))}
         </select>
       </Field>
+      {doors.length > 1 && (
+        <Field label="Walk me to" hint="Doorstep guides you from the car to this door. The closest one is picked for you.">
+          <select className={inputClass} value={zone.entranceId} onChange={(e) => onChange({ ...zone, entranceId: e.target.value })}>
+            {doors.map((d, i) => (
+              <option key={d.id} value={d.id}>
+                {d.label}
+                {i === 0 ? ' (closest)' : ''} · {away(zone.stopPoint, d.location)}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
       <div className="flex flex-wrap gap-x-5">
         {KINDS.map((k) => (
           <Switch key={k.value} checked={zone.kinds.includes(k.value)} onChange={(on) => toggleKind(k.value, on)} label={k.label} />

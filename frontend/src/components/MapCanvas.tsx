@@ -1,7 +1,7 @@
-import { AdvancedMarker, Circle, Map, Polygon, Polyline, useMap } from '@vis.gl/react-google-maps'
-import { useEffect, useRef, useState } from 'react'
+import { AdvancedMarker, AdvancedMarkerAnchorPoint, Circle, CollisionBehavior, Map, Polygon, Polyline, useMap } from '@vis.gl/react-google-maps'
+import { useEffect, useId, useRef, useState } from 'react'
 import { CAMPUS_CENTER } from '../data/campus'
-import { centroid, distanceMeters } from '../geo'
+import { centroid, distanceMeters, splitPath } from '../geo'
 import { MAP_STYLES, type MapLayers } from '../mapLayers'
 import type { Building, Entrance, LatLng, RoadClosure, Zone } from '../types'
 
@@ -13,6 +13,7 @@ const COLOR = {
   closed: '#ff5d5d',
   drive: '#2ee6d6',
   walk: '#ffffff',
+  walkNav: '#7df3e8',
   me: '#4c8dff',
 }
 
@@ -34,10 +35,14 @@ type Props = {
   editMode: boolean
   tool: Tool
   draftClosure: LatLng[]
-  me?: { position: LatLng; accuracy?: number }
+  me?: { position: LatLng; accuracy?: number; heading?: number }
   drivePath?: LatLng[]
   walkPath?: LatLng[]
   layers: MapLayers
+  /** In-app navigation: the route, how far along you are, and where you are. */
+  nav?: { travel: 'DRIVING' | 'WALKING'; path: LatLng[]; traveled: number; position?: LatLng; heading: number }
+  follow: boolean
+  onUserPan: () => void
   onMapClick: (point: LatLng) => void
   onSelectZone: (zone: Zone) => void
   onSelectBuilding: (b: Building) => void
@@ -56,7 +61,10 @@ export function MapCanvas(props: Props) {
   const selectedDoor = selectedEntranceId ? entrances.get(selectedEntranceId) : undefined
   // In walk mode also fit where the walk starts (demo start, or you).
   const walkOrigin = props.walkMode ? (props.walkStart?.location ?? me?.position) : undefined
-  useFitTo(destination, editMode ? undefined : selected, selectedDoor, walkOrigin)
+  const navigating = !!props.nav
+  useFitTo(navigating ? undefined : destination, editMode ? undefined : selected, selectedDoor, walkOrigin, navigating)
+  useFollow(props.nav?.position, navigating && props.follow)
+  const [navDone, navAhead] = props.nav ? splitPath(props.nav.path, props.nav.traveled) : [[], []]
 
   // Car markers only where they help: the destination's zones, or your own zones while editing.
   const showStopFor = (z: Zone) =>
@@ -87,19 +95,29 @@ export function MapCanvas(props: Props) {
       clickableIcons={false}
       draggableCursor={tool === 'none' ? undefined : 'crosshair'}
       onClick={(e) => e.detail.latLng && props.onMapClick(e.detail.latLng)}
+      onDragstart={props.onUserPan}
     >
       {layers.traffic && <Overlay kind="traffic" />}
       {layers.transit && <Overlay kind="transit" />}
 
       {!destination &&
         !editMode &&
+        !navigating &&
         buildings.map((b) => (
-          <AdvancedMarker key={b.id} position={b.location} onClick={() => props.onSelectBuilding(b)} title={b.name}>
+          <AdvancedMarker
+            key={b.id}
+            position={b.location}
+            onClick={() => props.onSelectBuilding(b)}
+            title={b.name}
+            // With 90 buildings, let Google hide labels that would overlap (bigger buildings win).
+            collisionBehavior={CollisionBehavior.OPTIONAL_AND_HIDES_LOWER_PRIORITY}
+            zIndex={b.entrances.length}
+          >
             <div className="pin-label transition-transform hover:scale-110 hover:border-accent">{b.code}</div>
           </AdvancedMarker>
         ))}
 
-      {destination && !editMode && (
+      {destination && !editMode && !navigating && (
         <AdvancedMarker position={destination.location} zIndex={1}>
           <div className="rounded-full bg-[#3a3f48] px-2.5 py-1.5 text-[11px] font-bold text-[#c9ced6] opacity-90" title="Where ride apps drop you today">
             Address pin
@@ -107,8 +125,29 @@ export function MapCanvas(props: Props) {
         </AdvancedMarker>
       )}
 
+      {/* In-app navigation: gray behind you, bright ahead. */}
+      {props.nav && (
+        <>
+          <Polyline path={navDone} strokeColor="#6b7686" strokeOpacity={0.7} strokeWeight={6} clickable={false} zIndex={3} />
+          <Polyline path={navAhead} strokeColor="#000000" strokeOpacity={0.45} strokeWeight={11} clickable={false} zIndex={4} />
+          <Polyline
+            path={navAhead}
+            strokeColor={props.nav.travel === 'DRIVING' ? COLOR.drive : COLOR.walkNav}
+            strokeOpacity={1}
+            strokeWeight={7}
+            clickable={false}
+            zIndex={5}
+          />
+          {props.nav.position && (
+            <AdvancedMarker position={props.nav.position} zIndex={70} title="You" anchorPoint={AdvancedMarkerAnchorPoint.CENTER}>
+              <Beacon heading={props.nav.heading} arrow />
+            </AdvancedMarker>
+          )}
+        </>
+      )}
+
       {/* Car route: you → curb */}
-      {props.drivePath && !editMode && (
+      {props.drivePath && !editMode && !navigating && (
         <>
           <Polyline path={props.drivePath} strokeColor="#000000" strokeOpacity={0.5} strokeWeight={9} clickable={false} zIndex={3} />
           <Polyline path={props.drivePath} strokeColor={COLOR.drive} strokeOpacity={1} strokeWeight={5} clickable={false} zIndex={4} />
@@ -116,7 +155,7 @@ export function MapCanvas(props: Props) {
       )}
 
       {/* Walking route: curb → door */}
-      {props.walkPath && !editMode && (
+      {props.walkPath && !editMode && !navigating && (
         <Polyline
           path={props.walkPath}
           strokeOpacity={0}
@@ -132,7 +171,7 @@ export function MapCanvas(props: Props) {
         />
       )}
 
-      {zones.map((z) => (
+      {!navigating && zones.map((z) => (
         <ZoneShape
           key={z.id}
           zone={z}
@@ -171,7 +210,7 @@ export function MapCanvas(props: Props) {
         </>
       )}
 
-      {props.walkStart && (
+      {props.walkStart && !navigating && (
         <AdvancedMarker position={props.walkStart.location} zIndex={55} title={`Walk starts at ${props.walkStart.label}`}>
           <div className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-1 text-[11px] font-bold shadow-[var(--shadow-float)]">
             <span aria-hidden className="size-2.5 rounded-full bg-[#4c8dff]" />
@@ -180,7 +219,7 @@ export function MapCanvas(props: Props) {
         </AdvancedMarker>
       )}
 
-      {me && (
+      {me && !navigating && (
         <>
           {me.accuracy && me.accuracy < 200 && (
             <Circle
@@ -192,12 +231,49 @@ export function MapCanvas(props: Props) {
               clickable={false}
             />
           )}
-          <AdvancedMarker position={me.position} zIndex={60} title="You are here">
-            <div className="size-[18px] rounded-full border-[3px] border-white bg-[#4c8dff] shadow-[0_0_0_8px_rgb(76_141_255/0.25)]" />
+          <AdvancedMarker position={me.position} zIndex={60} title="You are here" anchorPoint={AdvancedMarkerAnchorPoint.CENTER}>
+            <Beacon heading={me.heading} />
           </AdvancedMarker>
         </>
       )}
     </Map>
+  )
+}
+
+/**
+ * You on the map: a blue dot (or arrow while navigating) with a soft pulse, and
+ * a beam fanning out in the direction you're facing or heading.
+ */
+function Beacon({ heading, arrow }: { heading?: number; arrow?: boolean }) {
+  const gradientId = useId()
+  return (
+    <div className="pointer-events-none relative grid size-24 place-items-center">
+      {heading !== undefined && (
+        <svg aria-hidden viewBox="0 0 96 96" className="absolute inset-0 transition-transform duration-300" style={{ transform: `rotate(${heading}deg)` }}>
+          <defs>
+            <radialGradient id={gradientId} cx="48" cy="48" r="46" gradientUnits="userSpaceOnUse">
+              <stop offset="0.15" stopColor="#4c8dff" stopOpacity="0.55" />
+              <stop offset="1" stopColor="#4c8dff" stopOpacity="0" />
+            </radialGradient>
+          </defs>
+          {/* A 70° wedge pointing up (north); the whole svg rotates to the heading. */}
+          <path d="M48 48 L22.8 12 A44 44 0 0 1 73.2 12 Z" fill={`url(#${gradientId})`} />
+        </svg>
+      )}
+      <span aria-hidden className="absolute size-9 animate-ping-soft rounded-full bg-[#4c8dff]/35" />
+      {arrow ? (
+        <div
+          className="relative grid size-9 place-items-center rounded-full border-[3px] border-white bg-[#4c8dff] shadow-[0_2px_10px_rgb(0_0_0/0.4)]"
+          style={{ transform: `rotate(${heading ?? 0}deg)` }}
+        >
+          <svg aria-hidden viewBox="0 0 24 24" className="size-4">
+            <path d="M12 3 19 20l-7-4-7 4 7-17Z" fill="white" />
+          </svg>
+        </div>
+      ) : (
+        <div className="relative size-[18px] rounded-full border-[3px] border-white bg-[#4c8dff] shadow-[0_2px_10px_rgb(0_0_0/0.4)]" />
+      )}
+    </div>
   )
 }
 
@@ -324,13 +400,14 @@ function useStartCamera(colorScheme: string) {
 const MAX_FIT_ZOOM = 18
 
 /** Zoom to the destination building, the chosen curb and its door. */
-function useFitTo(destination?: Building, selected?: Zone, door?: Entrance, origin?: LatLng) {
+function useFitTo(destination?: Building, selected?: Zone, door?: Entrance, origin?: LatLng, navigating = false) {
   const map = useMap()
   const key = `${destination?.id}|${selected?.id}|${door?.id}|${origin ? 'walk' : 'car'}`
   const fittedFor = useRef<string>(undefined)
 
   useEffect(() => {
-    if (!map) return
+    // While navigating, the camera follows you instead (see useFollow).
+    if (!map || navigating) return
     // A rebuilt map (after a light/dark switch) already opens at the old view.
     if (fittedFor.current === key) return
     fittedFor.current = key
@@ -352,7 +429,47 @@ function useFitTo(destination?: Building, selected?: Zone, door?: Entrance, orig
     })
     return () => listener.remove()
     // Refit only when the destination or chosen zone changes, not on every render.
-  }, [map, key]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [map, key, navigating]) // eslint-disable-line react-hooks/exhaustive-deps
+}
+
+const NAV_ZOOM = 18
+
+/** Keep the camera on you while navigating (until you drag the map). */
+function useFollow(position: LatLng | undefined, enabled: boolean) {
+  const map = useMap()
+  const zoomed = useRef(false)
+
+  useEffect(() => {
+    if (!enabled) zoomed.current = false
+  }, [enabled])
+
+  useEffect(() => {
+    if (!map || !enabled || !position) return
+    if (!zoomed.current) {
+      map.setZoom(NAV_ZOOM)
+      zoomed.current = true
+    }
+    map.panTo(offsetForPanel(map, position))
+  }, [map, enabled, position?.lat, position?.lng]) // eslint-disable-line react-hooks/exhaustive-deps
+}
+
+/**
+ * The map center that puts `p` in the middle of the part of the map you can
+ * actually see: right of the side panel on desktop, above the sheet on phones.
+ */
+function offsetForPanel(map: google.maps.Map, p: LatLng): LatLng {
+  const projection = map.getProjection()
+  const zoom = map.getZoom()
+  if (!projection || zoom === undefined) return p
+  const desktop = window.matchMedia('(min-width: 900px)').matches
+  // Pixels to shift the view: half the panel width, or a quarter of the screen height.
+  const dx = desktop ? -226 : 0
+  const dy = desktop ? 0 : window.innerHeight * 0.22
+  const scale = 2 ** zoom
+  const world = projection.fromLatLngToPoint(p)
+  if (!world) return p
+  const center = projection.fromPointToLatLng(new google.maps.Point(world.x + dx / scale, world.y + dy / scale))
+  return center ? center.toJSON() : p
 }
 
 /** Leave room for the panel so fitted content isn't hidden behind it. */
