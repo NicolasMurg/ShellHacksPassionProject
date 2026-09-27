@@ -10,7 +10,6 @@ const SWATCH: Record<MapStyle, string> = {
   satellite: 'radial-gradient(circle at 30% 30%, #6b8a52, #3d5234 60%, #2c3a27)',
   hybrid:
     'linear-gradient(135deg, transparent 0 46%, #f5d77a 46% 54%, transparent 54%), radial-gradient(circle at 30% 30%, #6b8a52, #3d5234 60%, #2c3a27)',
-  terrain: 'radial-gradient(circle at 70% 30%, #c9d9b6, #b3c99c 45%, #e8e2cf)',
 }
 
 /** Floating button in the top-right corner that picks the base map and overlays. */
@@ -81,7 +80,7 @@ export function LayerControl({ value, onChange }: { value: MapLayers; onChange: 
 
           <div className="flex flex-col gap-2">
             <span className="px-1 text-xs font-bold uppercase tracking-wide text-muted">Map style</span>
-            <div role="radiogroup" aria-label="Map style" className="grid grid-cols-3 gap-2">
+            <div role="radiogroup" aria-label="Map style" className="grid grid-cols-2 gap-2">
               {(Object.keys(MAP_STYLES) as MapStyle[]).map((style) => {
                 const checked = value.style === style
                 return (

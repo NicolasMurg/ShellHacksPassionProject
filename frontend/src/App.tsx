@@ -27,6 +27,7 @@ import { useCampus, useClosures, useZones } from './state/data'
 import { doorLocation, placeDoor, toggleLink, useDoorways } from './state/doorways'
 import { MODE_ICON, MODE_LABEL, measuredPace, type Motion } from './motion'
 import { recordFix, resetWalked, useMotion } from './state/motion'
+import { locateInTrip, tripElapsed } from './tripTimeline'
 import { recordWalkingFix } from './state/speedGrid'
 import { useNavigation, type NavLeg } from './state/navigation'
 import { lockToDoorways } from './doorShortcuts'
@@ -169,12 +170,50 @@ function Doorstep() {
   // Off campus (or no GPS) there's nothing real to track, so play the trip by default.
   const simulate = simulateChoice ?? !onCampus
   const leg = trip?.legs[trip.index]
-  const nav = useNavigation({ leg, gps: geo.position, walkSpeedMps: walkingSpeed(user?.profile), simulate, stepFree })
+  // Simulated trips play like a video: pause, or scrub the timeline to any moment of the ride.
+  const [playing, setPlaying] = useState(true)
+  const [seekRequest, setSeekRequest] = useState<{ id: number; fraction: number }>()
+  const nav = useNavigation({
+    leg,
+    gps: geo.position,
+    walkSpeedMps: walkingSpeed(user?.profile),
+    simulate,
+    stepFree,
+    playing,
+    seek: seekRequest,
+  })
+
+  // Timeline chapters, one per leg: the real route time once a leg has been routed, a rough
+  // estimate (straight line × 1.3 at walking speed, or ~8 m/s by car) until then.
+  const [legSeconds, setLegSeconds] = useState<Record<number, number>>({})
+  if (trip && nav?.status === 'active' && legSeconds[trip.index] !== nav.totalSeconds) {
+    setLegSeconds({ ...legSeconds, [trip.index]: nav.totalSeconds })
+  }
+  const estimateSeconds = (l: NavLeg) => (distanceMeters(l.from, l.to) * 1.3) / (l.travel === 'DRIVING' ? 8 : walkingSpeed(user?.profile))
+  const chapters = (trip?.legs ?? []).map((l, i) => ({
+    label: l.stage,
+    icon: l.travel === 'DRIVING' ? '🚗' : '🚶',
+    seconds: Math.max(1, legSeconds[i] ?? estimateSeconds(l)),
+  }))
+  const elapsed = trip
+    ? tripElapsed(chapters, trip.index, nav?.status === 'active' ? nav.totalSeconds - nav.remainingSeconds : 0)
+    : 0
+  // Jump to a moment of the trip. Within the current leg it follows the drag live; jumping to
+  // another leg happens on release, since that leg may need its route first.
+  const seekTrip = (seconds: number, commit: boolean) => {
+    if (!trip) return
+    const { index, fraction } = locateInTrip(chapters, seconds)
+    if (index !== trip.index && !commit) return
+    if (index !== trip.index) setTrip({ ...trip, index })
+    setSeekRequest((s) => ({ id: (s?.id ?? 0) + 1, fraction }))
+  }
 
   const startTrip = (legs: NavLeg[], destinationLabel: string, door?: LatLng) => {
     setTrip({ legs, index: 0, destinationLabel, door })
     resetWalked() // measure this trip's walking pace from scratch
     setSimulateChoice(undefined)
+    setPlaying(true)
+    setLegSeconds({})
     setFollow(true)
     setExpanded(true)
   }
@@ -228,7 +267,8 @@ function Doorstep() {
   }
 
   // Reached the end of a leg with more to go (e.g. the car reached the curb): continue to the next one.
-  const legArrived = !!nav?.arrived && !!trip && trip.index < trip.legs.length - 1
+  // (A paused simulation stays put, even at the end of a leg.)
+  const legArrived = !!nav?.arrived && !!trip && trip.index < trip.legs.length - 1 && (!simulate || playing)
   useEffect(() => {
     if (!legArrived) return
     const id = setTimeout(() => setTrip((t) => (t ? { ...t, index: t.index + 1 } : t)), 2000)
@@ -578,6 +618,9 @@ function Doorstep() {
             doorLocation={trip.door}
             simulate={simulate}
             onSimulate={setSimulateChoice}
+            timeline={
+              simulate ? { chapters, elapsed, playing, onPlayPause: () => setPlaying((p) => !p), onSeek: seekTrip } : undefined
+            }
             voice={voice}
             onVoice={setVoice}
             following={follow}

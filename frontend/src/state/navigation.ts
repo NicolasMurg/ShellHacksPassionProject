@@ -37,6 +37,9 @@ export type Navigation = {
   traveled: number // meters along the route
   remainingMeters: number
   remainingSeconds: number
+  /** The whole leg, for the trip timeline. */
+  totalMeters: number
+  totalSeconds: number
   step?: NavStep
   nextStep?: NavStep
   /** Turns after the next one, for the "upcoming" list. */
@@ -62,11 +65,16 @@ export function useNavigation(opts: {
   walkSpeedMps: number
   simulate: boolean
   stepFree?: boolean
+  /** Simulation only: false pauses the simulated trip (default true). */
+  playing?: boolean
+  /** Simulation only: jump to this fraction (0–1) of the current leg; a new `id` means a new jump. */
+  seek?: { id: number; fraction: number }
 }): Navigation | undefined {
-  const { leg, gps, walkSpeedMps, simulate, stepFree } = opts
+  const { leg, gps, walkSpeedMps, simulate, stepFree, playing = true, seek } = opts
   const routes = useMapsLibrary('routes')
   const graph = useCampusGraph()
-  const [route, setRoute] = useState<NavRoute>()
+  // Routes already fetched, so scrubbing back and forth between legs doesn't ask Google again.
+  const [fetched, setFetched] = useState<Record<string, NavRoute>>({})
   const [failed, setFailed] = useState<{ key: string; message: string }>()
   const [rerouteFrom, setRerouteFrom] = useState<{ legKey: string; from: LatLng; n: number }>()
   const [sim, setSim] = useState<{ key: string; along: number }>()
@@ -88,8 +96,9 @@ export function useNavigation(opts: {
   }, [graph, routeKey, stepFree, walkSpeedMps]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Everything else: fetch from Google (again when rerouting).
+  const alreadyFetched = !!routeKey && routeKey in fetched
   useEffect(() => {
-    if (!routes || !leg || !routeKey || !startFrom || campusRoute) return
+    if (!routes || !leg || !routeKey || !startFrom || campusRoute || alreadyFetched) return
     let cancelled = false
     new routes.DirectionsService()
       .route({ origin: startFrom, destination: leg.to, travelMode: google.maps.TravelMode[leg.travel] })
@@ -118,21 +127,30 @@ export function useNavigation(opts: {
         const before = along
         add(leg.to)
         if (along > before && steps.length) steps[steps.length - 1].endAlong = along
-        setRoute({ key: routeKey, path, steps, meters: along, seconds: gLeg.duration?.value ?? along / walkSpeedMps })
+        const route = { key: routeKey, path, steps, meters: along, seconds: gLeg.duration?.value ?? along / walkSpeedMps }
+        setFetched((f) => ({ ...f, [routeKey]: route }))
       })
       .catch((err: Error) => !cancelled && setFailed({ key: routeKey, message: err.message || 'No route found' }))
     return () => {
       cancelled = true
     }
     // startFrom is captured when the route key changes; GPS drift alone shouldn't refetch.
-  }, [routes, routeKey, campusRoute]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [routes, routeKey, campusRoute, alreadyFetched]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const current = campusRoute ?? (route && route.key === routeKey ? route : undefined)
+  const current = campusRoute ?? (routeKey ? fetched[routeKey] : undefined)
+
+  // A timeline jump: applied as soon as the leg's route is known (it may still be loading after
+  // jumping to another leg). Each jump has a new id, so it's applied exactly once.
+  const [appliedSeek, setAppliedSeek] = useState<number>()
+  if (simulate && seek && seek.id !== appliedSeek && current) {
+    setAppliedSeek(seek.id)
+    setSim({ key: current.key, along: Math.min(1, Math.max(0, seek.fraction)) * current.meters })
+  }
 
   // Simulated trip: move along the route at (sped-up) travel speed.
   const travelSpeed = leg?.travel === 'DRIVING' && current ? current.meters / Math.max(1, current.seconds) : walkSpeedMps
   useEffect(() => {
-    if (!simulate || !current || !leg) return
+    if (!simulate || !playing || !current || !leg) return
     const step = travelSpeed * SIM_SPEEDUP[leg.travel] * (SIM_TICK_MS / 1000)
     const id = setInterval(() => {
       setSim((s) => {
@@ -141,7 +159,7 @@ export function useNavigation(opts: {
       })
     }, SIM_TICK_MS)
     return () => clearInterval(id)
-  }, [simulate, current, leg, travelSpeed])
+  }, [simulate, playing, current, leg, travelSpeed])
 
   const simAlong = sim && current && sim.key === current.key ? sim.along : 0
   const position = current ? (simulate ? pointAlong(current.path, simAlong) : (gps ?? current.path[0])) : undefined
@@ -157,14 +175,25 @@ export function useNavigation(opts: {
   }, [simulate, gps, progress, legKey])
 
   if (!leg || !routeKey) return undefined
-  const idle = { path: [], heading: 0, traveled: 0, remainingMeters: 0, remainingSeconds: 0, upcoming: [], metersToManeuver: 0, arrived: false }
+  const idle = {
+    path: [],
+    heading: 0,
+    traveled: 0,
+    remainingMeters: 0,
+    remainingSeconds: 0,
+    totalMeters: 0,
+    totalSeconds: 0,
+    upcoming: [],
+    metersToManeuver: 0,
+    arrived: false,
+  }
   if (failed && failed.key === routeKey && !current) return { status: 'error', error: failed.message, ...idle }
   if (!current || !position || !progress) return { status: 'routing', ...idle }
 
   const traveled = simulate ? simAlong : progress.along
   const remainingMeters = Math.max(0, current.meters - traveled)
-  const remainingSeconds =
-    leg.travel === 'WALKING' ? remainingMeters / walkSpeedMps : current.seconds * (remainingMeters / Math.max(1, current.meters))
+  const totalSeconds = leg.travel === 'WALKING' ? current.meters / walkSpeedMps : current.seconds
+  const remainingSeconds = totalSeconds * (remainingMeters / Math.max(1, current.meters))
   const stepIndex = Math.max(0, current.steps.findIndex((s) => traveled < s.endAlong - 1))
   const step = current.steps[stepIndex]
   const ahead = pointAlong(current.path, traveled + 8)
@@ -178,6 +207,8 @@ export function useNavigation(opts: {
     traveled,
     remainingMeters,
     remainingSeconds,
+    totalMeters: current.meters,
+    totalSeconds,
     step,
     nextStep: current.steps[stepIndex + 1],
     upcoming: current.steps.slice(stepIndex + 2, stepIndex + 6),
