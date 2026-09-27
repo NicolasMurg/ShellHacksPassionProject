@@ -28,7 +28,7 @@ export function Button({ variant = 'ghost', className, ...rest }: ButtonProps) {
       type="button"
       className={cx(
         'inline-flex h-11 items-center justify-center gap-2 rounded-full px-5 font-bold transition-[filter,border-color,transform] active:scale-[0.98] disabled:opacity-40 disabled:active:scale-100',
-        variant === 'primary' && 'bg-brand text-accent-ink shadow-[var(--shadow-glow)] hover:brightness-110',
+        variant === 'primary' && 'bg-button text-accent-ink shadow-[var(--shadow-glow)] hover:brightness-110',
         variant === 'ghost' && 'border border-line bg-raised text-fg hover:border-accent/60',
         variant === 'danger' && 'border border-closed/40 bg-closed/10 text-closed hover:bg-closed/20',
         variant === 'quiet' && 'text-muted hover:text-fg',

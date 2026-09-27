@@ -28,6 +28,68 @@
   --animate-ping-soft: ping-soft 2.4s cubic-bezier(0, 0, 0.2, 1) infinite;
   --animate-drift: drift 18s ease-in-out infinite alternate;
 
+  /* Night-city sign-in scene (components/NightScene.tsx). */
+  --animate-twinkle: twinkle 4s ease-in-out infinite;
+  --animate-shoot: shoot 12s linear infinite;
+  --animate-road: road 0.8s linear infinite;
+  --animate-drive-by: drive-by 10s linear infinite;
+  --animate-bob: bob 1.8s ease-in-out infinite;
+
+  @keyframes twinkle {
+    0%,
+    100% {
+      opacity: var(--dim, 0.2);
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
+  /* A shooting star: a quick streak, then a long pause (the rest of the cycle). */
+  @keyframes shoot {
+    0% {
+      transform: translateX(0);
+      opacity: 0;
+    }
+    2% {
+      opacity: 1;
+    }
+    8% {
+      transform: translateX(560px);
+      opacity: 0;
+    }
+    100% {
+      transform: translateX(560px);
+      opacity: 0;
+    }
+  }
+
+  /* Lane markings slide left, so the car looks like it's driving right. */
+  @keyframes road {
+    to {
+      background-position-x: -72px;
+    }
+  }
+
+  @keyframes drive-by {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      transform: translateX(-135vw);
+    }
+  }
+
+  @keyframes bob {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-1px);
+    }
+  }
+
   @keyframes ping-soft {
     0% {
       transform: scale(0.6);
@@ -92,9 +154,14 @@
     backdrop-filter: blur(10px);
   }
 
-  /* Waymo teal → blue, for primary buttons, logo mark and avatars. */
+  /* Waymo teal → blue, for the logo mark, avatars and accents. */
   .bg-brand {
     background-image: linear-gradient(135deg, var(--color-accent), var(--color-accent-2));
+  }
+
+  /* Primary buttons: mostly solid teal with just a hint of shift toward cyan. */
+  .bg-button {
+    background-image: linear-gradient(135deg, var(--color-accent) 20%, #3ccfea);
   }
 
   .text-brand {

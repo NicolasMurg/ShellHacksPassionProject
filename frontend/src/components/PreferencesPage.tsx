@@ -3,31 +3,24 @@ import { useAuth } from '../state/auth'
 import type { Mobility, Pace, User, WalkingProfile } from '../types'
 import { MOBILITY_LABEL, PACE_LABEL, walkingSpeed } from '../walking'
 import { cx } from './cx'
+import { BayNight, NightScene } from './NightScene'
 import { Button, Field, LogoMark, Notice, inputClass } from './ui'
 
 /** The Preferences tab: the sign-in page when signed out, personal settings when signed in. */
 export function PreferencesPage({ onOpenMap }: { onOpenMap: () => void }) {
   const { user, error } = useAuth()
   return (
-    // Nearly solid over the (still mounted) map, with just a hint of it showing through.
-    <section aria-label="Preferences" className="absolute inset-0 z-40 overflow-y-auto overscroll-contain bg-ink/92 backdrop-blur-md">
-      <Aurora />
+    // Signed out: a night-city scene. Signed in: nearly solid over the (still mounted) map.
+    <section
+      aria-label="Preferences"
+      className="absolute inset-0 z-40 overflow-y-auto overscroll-contain bg-ink"
+    >
+      {user ? <BayNight /> : <NightScene />}
       <div className="relative mx-auto flex min-h-full w-full max-w-md flex-col gap-5 px-4 pb-32 pt-[max(20px,env(safe-area-inset-top))]">
         {error && <Notice tone="error">{error}</Notice>}
         {user ? <Preferences key={user.id} user={user} onOpenMap={onOpenMap} /> : <SignIn onOpenMap={onOpenMap} />}
       </div>
     </section>
-  )
-}
-
-/** Soft teal and blue light drifting behind the page, plus a faint grid. */
-function Aurora() {
-  return (
-    <div aria-hidden className="pointer-events-none fixed inset-0 overflow-hidden">
-      <div className="absolute -left-1/4 -top-1/4 size-[70vmax] animate-drift rounded-full bg-[radial-gradient(circle,rgb(46_230_214/0.07),transparent_60%)]" />
-      <div className="absolute -bottom-1/3 -right-1/4 size-[70vmax] animate-drift rounded-full bg-[radial-gradient(circle,rgb(59_140_255/0.07),transparent_60%)] [animation-delay:-9s]" />
-      <div className="absolute inset-0 bg-[linear-gradient(rgb(255_255_255/0.025)_1px,transparent_1px),linear-gradient(90deg,rgb(255_255_255/0.025)_1px,transparent_1px)] bg-[size:44px_44px] [mask-image:radial-gradient(ellipse_at_top,black,transparent_70%)]" />
-    </div>
   )
 }
 
