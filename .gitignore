@@ -1,3 +1,6 @@
+# Installed packages (the root package.json is only for deployment)
+node_modules/
+
 # Secrets: never commit env files, in any folder
 .env
 .env.*

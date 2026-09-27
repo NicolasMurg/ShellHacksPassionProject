@@ -1,0 +1,16 @@
+{
+  "name": "doorstep",
+  "private": true,
+  "description": "Deployment entry point for DigitalOcean App Platform (repo root, so both apps can use ../shared).",
+  "scripts": {
+    "build:frontend": "cd frontend && npm install && npx vite build",
+    "build:backend": "cd backend && bun install",
+    "start:backend": "cd backend && bun src/index.ts"
+  },
+  "dependencies": {
+    "bun": "^1.2.22"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

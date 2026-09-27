@@ -88,7 +88,8 @@ export function MapCanvas(props: Props) {
   // In walk mode also fit where the walk starts (demo start, or you).
   const walkOrigin = props.walkMode ? (props.start?.location ?? me?.position) : undefined
   const navigating = !!props.nav
-  useFitTo(destination, walkOrigin, navigating)
+  // While navigating the camera follows you (useFollow) instead of framing the destination.
+  useFitTo(navigating ? undefined : destination, walkOrigin)
   // Runs after useFitTo so a new typed address shows the whole trip first.
   useFitTrip(props.start?.typed && !navigating ? props.start.location : undefined, destination)
   useFollow(props.nav?.position, navigating && props.follow)
@@ -218,7 +219,7 @@ export function MapCanvas(props: Props) {
         </>
       )}
 
-      {props.arrivalStop && !editMode && <AdvancedMarker position={props.arrivalStop} zIndex={50}
+      {props.arrivalStop && !editMode && !navigating && <AdvancedMarker position={props.arrivalStop} zIndex={50}
         draggable={props.movingArrival} title={props.movingArrival ? 'Drag to move the stop' : 'Suggested stopping point'}
         onDragEnd={e => { const p = e.latLng?.toJSON(); if (p) props.onMoveArrival(p) }}>
         <div className="pin-stop" style={{ borderColor: COLOR.selected, background: COLOR.selected }}>🚗</div>
@@ -493,17 +494,14 @@ function useThreeD(on: boolean) {
 
 const MAX_FIT_ZOOM = 18
 
-/**
- * Frame a destination once. Route results and pin edits must not move the camera,
- * and while navigating the camera follows you instead (see useFollow).
- */
-function useFitTo(destination?: Building, origin?: LatLng, navigating = false) {
+/** Frame a destination once. Route results and pin edits must not move the camera. */
+function useFitTo(destination?: Building, origin?: LatLng) {
   const map = useMap()
   const key = destination?.id
   const fittedFor = useRef<string>(undefined)
 
   useEffect(() => {
-    if (!map || navigating || fittedFor.current === key) return
+    if (!map || fittedFor.current === key) return
     if (!destination) {
       fittedFor.current = undefined
       return
@@ -543,7 +541,7 @@ function useFitTo(destination?: Building, origin?: LatLng, navigating = false) {
     const listener = google.maps.event.addListenerOnce(map, 'idle', frame)
     return () => listener.remove()
     // Only a new destination reframes the map; keep the user's view during planning/editing.
-  }, [map, key, navigating]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [map, key]) // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 const NAV_ZOOM = 18

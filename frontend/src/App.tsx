@@ -151,6 +151,15 @@ function Doorstep() {
   const searchRequest = useRef<AbortController | undefined>(undefined)
   useEffect(() => () => searchRequest.current?.abort(), [])
 
+  // Arrival planning starts from a typed "From" address, otherwise your GPS.
+  const arrivalFrom = start?.location ?? geo.position
+  const arrival = useArrival(arrivalDestination && panel === 'dropoff' ? {
+    destination: arrivalDestination, kind: mode === 'pickup' ? 'pickup' : 'dropoff', stepFree,
+    origin: arrivalFrom ? { lat: +arrivalFrom.lat.toFixed(4), lng: +arrivalFrom.lng.toFixed(4) } : undefined,
+  } : undefined, token, JSON.stringify([user?.profile, closureStore.closures]))
+  const mapDestination = arrivalDestination ? { id: arrivalDestination.placeId ?? `point:${arrivalDestination.location.lat},${arrivalDestination.location.lng}`,
+    name: arrivalDestination.name, code: '', location: arrivalDestination.location, entrances: [] } : destination?.building
+
   // In-app navigation. A trip is one or more legs (walk to pickup, ride to the curb, walk to the door).
   const kind: TripKind = mode === 'pickup' ? 'pickup' : 'dropoff'
   const [trip, setTrip] = useState<{ legs: NavLeg[]; index: number; destinationLabel: string; door?: LatLng }>()
@@ -241,15 +250,6 @@ function Doorstep() {
   // "Looks like you're in a vehicle": offered once per ride while planning a walk.
   const suggestDropoff = motion.mode === 'vehicle' && walking && !trip && panel === 'dropoff' && dismissedDriveHint !== motion.since
 
-  // Arrival planning starts from a typed "From" address, otherwise your GPS.
-  const arrivalFrom = start?.location ?? geo.position
-  const arrival = useArrival(arrivalDestination && panel === 'dropoff' ? {
-    destination: arrivalDestination, kind: mode === 'pickup' ? 'pickup' : 'dropoff', stepFree,
-    origin: arrivalFrom ? { lat: +arrivalFrom.lat.toFixed(4), lng: +arrivalFrom.lng.toFixed(4) } : undefined,
-  } : undefined, token, JSON.stringify([user?.profile, closureStore.closures]))
-  const mapDestination = arrivalDestination ? { id: arrivalDestination.placeId ?? `point:${arrivalDestination.location.lat},${arrivalDestination.location.lng}`,
-    name: arrivalDestination.name, code: '', location: arrivalDestination.location, entrances: [] } : destination?.building
-
   const clearSelection = () => {
     arrival.reset()
     setArrivalDestination(undefined)
@@ -333,11 +333,9 @@ function Doorstep() {
     const spot = zoneStore.personal.find((z) => !z.hidden && z.name.trim().length > 2 && q.includes(z.name.trim().toLowerCase()))
     const spotBuilding = spot && campus.buildings.find((b) => b.id === spot.buildingId)
     if (spot && spotBuilding) {
+      clearSelection()
       setDestination({ building: spotBuilding, room: text.match(/\b([a-z]?\d{2,4}[a-z]?)\b/i)?.[1]?.toUpperCase() ?? '' })
-      setSearchError(undefined)
       setSelectedZoneId(spot.id)
-      setSelectedDoorId(undefined)
-      setConfirmedZoneId(undefined)
       return
     }
     try {
@@ -419,6 +417,7 @@ function Doorstep() {
     } else if (tool === 'drawClosure') {
       setDraftClosure((d) => [...d, point])
     } else if (panel === 'dropoff') {
+      if (trip) return // tapping the map mid-trip shouldn't cancel navigation
       if (arrivalDestination && arrival.moving) { arrival.moveTo(point); return }
       clearSelection()
       setArrivalDestination({ name: placeId ? 'Selected place' : 'Selected location', location: point, placeId })
