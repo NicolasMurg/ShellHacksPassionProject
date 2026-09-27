@@ -22,3 +22,8 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
   res.locals.sessionId = session.id;
   next();
 };
+
+export const optionalAuth: RequestHandler = (req, res, next) => {
+  if (req.headers.authorization) return requireAuth(req, res, next);
+  next();
+};

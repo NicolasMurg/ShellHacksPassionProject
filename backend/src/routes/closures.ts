@@ -5,7 +5,7 @@ import { requireAuth } from "../middleware/auth";
 
 export const closureRoutes = Router();
 closureRoutes.get("/", async (_req, res) => {
-  res.json(await prisma.routeRestriction.findMany({ orderBy: { createdAt: "desc" } }));
+  res.json(await prisma.routeRestriction.findMany({ orderBy: { createdAt: "desc" }, include: { owner: { select: { id: true, name: true } } } }));
 });
 closureRoutes.get("/:id", async (req, res) => {
   const closure = await prisma.routeRestriction.findUnique({ where: { id: objectId.parse(req.params.id) } });
@@ -15,7 +15,7 @@ closureRoutes.get("/:id", async (req, res) => {
 closureRoutes.post("/", requireAuth, async (req, res) => {
   const data = restrictionInput.parse(req.body);
   validateRestriction(data);
-  res.status(201).json(await prisma.routeRestriction.create({ data: { ...data, ownerId: res.locals.user.id } }));
+  res.status(201).json(await prisma.routeRestriction.create({ data: { ...data, ownerId: res.locals.user.id }, include: { owner: { select: { id: true, name: true } } } }));
 });
 closureRoutes.patch("/:id", requireAuth, async (req, res) => {
   const restrictionId = objectId.parse(req.params.id);

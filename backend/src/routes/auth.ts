@@ -35,7 +35,9 @@ export const meRoutes = Router();
 meRoutes.use(requireAuth);
 meRoutes.get("/", (_req, res) => res.json(res.locals.user));
 meRoutes.patch("/", async (req, res) => {
-  const data = z.object({ name: z.string().trim().min(1).max(100).optional(), profile: profile.optional() })
+  const data = z.object({ name: z.string().trim().min(1).max(100).optional(), profile: profile.partial().optional() })
     .strict().refine(v => Object.keys(v).length > 0, "Provide an update").parse(req.body);
-  res.json(await prisma.user.update({ where: { id: res.locals.user.id }, data, select: publicUser }));
+  res.json(await prisma.user.update({ where: { id: res.locals.user.id }, data: {
+    name: data.name, profile: data.profile ? { update: data.profile } : undefined,
+  }, select: publicUser }));
 });

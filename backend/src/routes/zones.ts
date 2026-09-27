@@ -26,7 +26,7 @@ zoneRoutes.post("/", async (req, res) => {
     rooms: base.rooms, hidden: base.hidden } : {}), ...overrides });
   await checkEntrance(data.buildingId, data.entranceId);
   res.status(201).json(await prisma.zone.create({ data: {
-    ...data, id: crypto.randomUUID(), ownerId: res.locals.user.id, basedOnZoneId,
+    ...data, source: "personal", id: crypto.randomUUID(), ownerId: res.locals.user.id, basedOnZoneId,
   } }));
 });
 zoneRoutes.get("/:id", async (req, res) => {
@@ -46,4 +46,22 @@ zoneRoutes.delete("/:id", async (req, res) => {
   const result = await prisma.zone.deleteMany({ where: { id: id.parse(req.params.id), ownerId: res.locals.user.id } });
   if (!result.count) throw new HttpError(404, "Zone not found");
   res.status(204).end();
+});
+
+zoneRoutes.put("/:id", async (req, res) => {
+  const zoneId = id.parse(req.params.id);
+  const { ownerId: _owner, id: _id, source: _source, ...body } = req.body ?? {};
+  const input = zoneInput.extend({ basedOnZoneId: id.nullable().optional() }).parse(body);
+  await checkEntrance(input.buildingId, input.entranceId);
+  if (input.basedOnZoneId && !await prisma.zone.findFirst({ where: { id: input.basedOnZoneId,
+    OR: [{ ownerId: null }, { ownerId: { isSet: false } }, { ownerId: res.locals.user.id }] } })) {
+    throw new HttpError(404, "Base zone not found");
+  }
+  const existing = await prisma.zone.findUnique({ where: { id: zoneId } });
+  if (existing && existing.ownerId !== res.locals.user.id) throw new HttpError(404, "Zone not found");
+  const data = { ...input, source: "personal", ownerId: res.locals.user.id };
+  const zone = existing
+    ? await prisma.zone.update({ where: { id: zoneId, ownerId: res.locals.user.id }, data })
+    : await prisma.zone.create({ data: { ...data, id: zoneId } });
+  res.status(existing ? 200 : 201).json(zone);
 });
