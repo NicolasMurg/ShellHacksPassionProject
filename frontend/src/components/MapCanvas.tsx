@@ -19,12 +19,13 @@ const COLOR = {
   me: '#4c8dff',
 }
 
-export type Tool = 'none' | 'addZone' | 'drawClosure' | 'addPublicStop'
+export type Tool = 'none' | 'addZone' | 'drawClosure' | 'addPublicStop' | 'drawPublicBoundary'
 
 type Props = {
   publicStops: PublicStop[]
   nearbyPublicStops: Pick<PublicStop, 'id' | 'name' | 'location' | 'status'>[]
   activePublicStopId?: string
+  publicBoundary: LatLng[]
   publicStopDraft?: LatLng
   selectedPublicStopId?: string
   onSelectPublicStop: (stop: Pick<PublicStop, 'id' | 'name' | 'location'>) => void
@@ -65,7 +66,7 @@ export function MapCanvas(props: Props) {
   const selected = zones.find((z) => z.id === selectedZoneId)
   const { mapTypeId, colorScheme } = MAP_STYLES[layers.style]
   const start = useStartCamera(colorScheme)
-  const selectedEntranceId = selected?.entranceId ?? props.focusEntranceId
+  const selectedEntranceId = props.focusEntranceId ?? selected?.entranceId
 
   // In walk mode also fit where the walk starts (demo start, or you).
   const walkOrigin = props.walkMode ? (props.walkStart?.location ?? me?.position) : undefined
@@ -76,8 +77,7 @@ export function MapCanvas(props: Props) {
 
   // Car markers only where they help: the destination's zones, or your own zones while editing.
   const showStopFor = (z: Zone) =>
-    !props.walkMode &&
-    (z.id === selectedZoneId || z.id === editingZoneId || z.buildingId === destination?.id || (editMode && z.source === 'personal'))
+    !props.walkMode && !z.publicStopId && (!editMode || z.id === editingZoneId || z.source === 'personal')
 
   // Doors: the destination's, plus the selected zone's.
   const doors = [
@@ -116,6 +116,8 @@ export function MapCanvas(props: Props) {
         onClick={() => props.onSelectPublicStop(stop)}>
         <PublicStopPin name={stop.name} status={stop.status} selected={stop.id === props.selectedPublicStopId || stop.id === props.activePublicStopId} />
       </AdvancedMarker>)}
+      {props.publicBoundary.length >= 3 && <Polygon paths={props.publicBoundary} fillColor={COLOR.shared} fillOpacity={0.2} strokeColor={COLOR.shared} clickable={false} />}
+      {props.publicBoundary.map((point, index) => <AdvancedMarker key={`boundary:${index}`} position={point}><span className="block size-2 rounded-full bg-accent" /></AdvancedMarker>)}
       {props.publicStopDraft && <AdvancedMarker position={props.publicStopDraft} zIndex={60}>
         <PublicStopPin name="New public stop" status="UNVERIFIED" selected />
       </AdvancedMarker>}

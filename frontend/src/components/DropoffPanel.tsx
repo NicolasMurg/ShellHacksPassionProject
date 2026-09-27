@@ -11,6 +11,7 @@ import { Button, Notice } from './ui'
 const QUICK_PICKS = ['GC 150', 'GC 243', 'Green Library 420', 'PC 110']
 
 type Props = {
+  onPropose: (zone: StopOption["zone"]) => void
   user?: User
   destination?: Destination
   mode: TravelMode
@@ -120,11 +121,13 @@ export function DropoffPanel(p: Props) {
                 kind={kind}
                 onSelect={() => p.onSelect(o.zone.id)}
                 onConfirm={() => p.onConfirm(o.zone.id)}
+                onPropose={o.zone.source === 'generated' ? () => p.onPropose(o.zone) : undefined}
               />
             ))}
           </ol>
         ))
       )}
+      {confirmed?.zone.source === 'generated' && <Button onClick={() => p.onPropose(confirmed.zone)}>Propose as public zone</Button>}
     </>
   )
 }

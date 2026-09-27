@@ -1,18 +1,18 @@
-import type { GeoPoint, PersonalStop, PublicStop, WalkingProfile } from '@prisma/client';
+import type { GeoPoint, PersonalStop, Zone, WalkingProfile } from '@prisma/client';
 import { z } from 'zod';
 import type { ApiArrivalPlan } from '../contracts';
 import { prisma } from './prisma';
-import { nearbyPublicStops, PUBLIC_STOP_RADIUS_METERS, needsAccessibleStop, publicStopRoutingStatus } from './publicStops';
+import { nearbyPublicStops, PUBLIC_STOP_RADIUS_METERS, needsAccessibleStop, publicStopRoutingStatus, sharedZoneWhere } from './publicStops';
 import { touchesRestriction } from './restrictions';
 export { touchesRestriction } from './restrictions';
 import { computeRoute } from './google';
-import { HttpError, point, objectId } from './validation';
+import { HttpError, point, id } from './validation';
 import { asLatLng, paceProfile } from './planner';
 import { walkSecondsForPath } from './walking';
 import { distanceMeters, offset, type LatLng } from '../../../shared/geo';
 
 export const arrivalDestination = z.object({ name: z.string().trim().min(1).max(200), location: point,
-  placeId: z.string().trim().min(1).max(300).optional(), publicStopId: objectId.optional() }).strict();
+  placeId: z.string().trim().min(1).max(300).optional(), publicStopId: id.optional() }).strict();
 export const arrivalInput = z.object({ destination: arrivalDestination, origin: point.optional(),
   stopPoint: point.optional(), stepFree: z.boolean().default(false), kind: z.enum(['DROPOFF', 'PICKUP']).default('DROPOFF') }).strict();
 export const geoPoint = (p: LatLng): z.infer<typeof point> => ({ type: 'Point', coordinates: [p.lng, p.lat] });
@@ -38,9 +38,9 @@ export async function findSavedStop(destination: z.infer<typeof arrivalDestinati
 }
 
 export async function planArrival(input: z.infer<typeof arrivalInput>, user?: { id: string; profile: WalkingProfile }) {
-  let reviewedStop: PublicStop | undefined;
+  let reviewedStop: Zone | undefined;
   if (input.destination.publicStopId) {
-    const stop = await prisma.publicStop.findUnique({ where: { id: input.destination.publicStopId } });
+    const stop = await prisma.zone.findFirst({ where: { id: input.destination.publicStopId, ...sharedZoneWhere, hidden: false, source: { not: "generated" } } });
     if (!stop || !publicStopRoutingStatus(stop)) {
       throw new HttpError(409, 'This public stop is disputed, retired, or restricted. Choose another stop.');
     }
@@ -48,7 +48,7 @@ export async function planArrival(input: z.infer<typeof arrivalInput>, user?: { 
     const needsAccessible = needsAccessibleStop(input.stepFree, user?.profile);
     if (needsAccessible && (stop.accessibility !== 'STEP_FREE' || publicStopRoutingStatus(stop) !== 'VERIFIED')) throw new HttpError(409, 'Step-free access at this public stop has not been verified.');
     reviewedStop = stop;
-    input = { ...input, destination: { name: stop.name, location: point.parse(stop.location), publicStopId: stop.id }, stopPoint: point.parse(stop.location) };
+    input = { ...input, destination: { name: stop.name, location: point.parse(stop.stopPoint), publicStopId: stop.id }, stopPoint: point.parse(stop.stopPoint) };
   }
   const target = asLatLng(input.destination.location);
   if (input.stopPoint) validateStopDistance(input.stopPoint, input.destination.location);
@@ -66,21 +66,21 @@ export async function planArrival(input: z.infer<typeof arrivalInput>, user?: { 
     (r.type === 'NO_CURB_CUT' && user?.profile.requireCurbCuts) || (r.type === 'STEEP_SLOPE' && user?.profile.avoidSteepSlopes));
   // Without GPS this short approach is used only to discover arrival points, never as a displayed trip ETA.
   const origin = input.origin ?? geoPoint(offset(target, 0, -300));
-  type Candidate = { point: GeoPoint; source: 'saved' | 'suggested' | 'manual' | 'public'; name: string; instructions: string; placeId?: string; publicStopId?: string; publicStopStatus?: 'VERIFIED' | 'UNVERIFIED'; priority: number };
+  type Candidate = { point: GeoPoint; source: 'saved' | 'suggested' | 'manual' | 'public'; name: string; instructions: string; placeId?: string; publicStopId?: string; publicStopStatus?: 'VERIFIED' | 'UNVERIFIED'; suggestedZoneId?: string; priority: number };
   const candidates: Candidate[] = [];
-  if (reviewedStop) candidates.push({ point: reviewedStop.location, source: 'public', publicStopId: reviewedStop.id, publicStopStatus: publicStopRoutingStatus(reviewedStop)!, priority: 0, name: reviewedStop.name, instructions: reviewedStop.instructions });
+  if (reviewedStop) candidates.push({ point: reviewedStop.stopPoint, source: 'public', publicStopId: reviewedStop.id, publicStopStatus: publicStopRoutingStatus(reviewedStop)!, priority: 0, name: reviewedStop.name, instructions: reviewedStop.instructions });
   else if (input.stopPoint) candidates.push({ point: input.stopPoint, source: 'manual', priority: 0, name: 'Your chosen stop', instructions: '' });
   else {
     if (saved) candidates.push({ point: saved.stopPoint, source: 'saved', priority: 0, name: saved.name, instructions: saved.instructions });
     const nearby = await nearbyPublicStops([input.destination.location], input.kind, needsAccessibleStop(input.stepFree, user?.profile));
-    candidates.push(...nearby.map(stop => ({ point: stop.location, source: 'public' as const, publicStopId: stop.id, publicStopStatus: publicStopRoutingStatus(stop)!, priority: publicStopRoutingStatus(stop) === 'VERIFIED' ? 1 : 2, name: stop.name, instructions: stop.instructions })));
+    candidates.push(...nearby.map(stop => ({ point: stop.stopPoint, source: stop.source === 'generated' ? 'suggested' as const : 'public' as const, suggestedZoneId: stop.source === 'generated' ? stop.id : undefined, publicStopId: stop.source === 'generated' ? undefined : stop.id, publicStopStatus: publicStopRoutingStatus(stop)!, priority: publicStopRoutingStatus(stop) === 'VERIFIED' ? 1 : 2, name: stop.name, instructions: stop.instructions })));
     candidates.push({ point: input.destination.location, placeId: input.destination.placeId, source: 'suggested', priority: 3, name: 'Suggested arrival point', instructions: '' });
   }
   const options: (ApiArrivalPlan['options'][number] & { priority: number })[] = [];
   let providerFailure: unknown;
   // Add alternatives along the mapped approach, never fabricate permission to use a private driveway.
   let expanded = false;
-  for (let i = 0; i < candidates.length && i < 9; i++) {
+  for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[i]!;
     try {
       let drive = await computeRoute(point.parse(origin), point.parse(candidate.point), 'DRIVE', candidate.placeId ? { placeId: candidate.placeId } : { stopover: true });
@@ -143,7 +143,7 @@ export async function planArrival(input: z.infer<typeof arrivalInput>, user?: { 
       const moved = candidate.source !== 'suggested' && distanceMeters(asLatLng(stopPoint), asLatLng(candidate.point)) > 5;
       if (moved) warnings.push('The preview pin was adjusted to the mapped road arrival point.');
       options.push({ id: candidate.publicStopId ? `public:${candidate.publicStopId}` : `${candidate.source}:${stopPoint.coordinates.map(n => n.toFixed(6)).join(',')}`, stopPoint, publicStopId: candidate.publicStopId, publicStopStatus: candidate.publicStopStatus,
-        source: candidate.source, priority: candidate.priority, name: candidate.name, instructions: candidate.instructions, walkSeconds, walk,
+        source: candidate.source, suggestedZoneId: candidate.suggestedZoneId, priority: candidate.priority, name: candidate.name, instructions: candidate.instructions, walkSeconds, walk,
         drive: input.origin ? drive : undefined, warnings: [...new Set(warnings)] });
     } catch (error) {
       if (error instanceof HttpError && error.status === 404) {
@@ -154,7 +154,7 @@ export async function planArrival(input: z.infer<typeof arrivalInput>, user?: { 
     }
   }
   if (providerFailure) throw providerFailure;
-  options.sort((a, b) => a.priority - b.priority || a.walkSeconds - b.walkSeconds);
+  options.sort((a, b) => a.walkSeconds - b.walkSeconds || a.priority - b.priority);
   if (!options.length) notices.add('No usable route was found. Move the stop pin or choose another destination.');
   return { options: options.map(({ priority, ...option }) => option), notices: [...notices], savedStop: saved ? publicStop(saved) : null, accessibilityVerified: false as const };
 }

@@ -6,7 +6,10 @@ import { requireAuth } from "../middleware/auth";
 
 export const zoneRoutes = Router();
 zoneRoutes.use(requireAuth);
-async function checkEntrance(buildingId: string, entranceId: string) {
+async function checkEntrance(buildingId?: string | null, entranceId?: string | null) {
+  if (buildingId && !await prisma.building.findUnique({ where: { id: buildingId } })) throw new HttpError(400, "Building not found");
+  if (!entranceId) return;
+  if (!buildingId) throw new HttpError(400, "An entrance requires a building");
   if (!await prisma.entrance.findFirst({ where: { id: entranceId, buildingId } })) {
     throw new HttpError(400, "Entrance does not belong to this building");
   }

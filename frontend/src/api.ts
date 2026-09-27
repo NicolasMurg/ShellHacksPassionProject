@@ -77,7 +77,7 @@ export const saveStop = async (token: string, destination: ArrivalDestination, s
 export const deleteStop = (token: string, id: string) => http<void>('DELETE', `/api/me/stops/${encodeURIComponent(id)}`, token)
 
 export type PublicStop = Omit<import('../../backend/src/contracts').ApiPublicStop, 'location'> & { location: LatLng }
-export type PublicStopInput = { name: string; instructions: string; location: LatLng; kinds: ('DROPOFF' | 'PICKUP')[]; photoUrl?: string }
+export type PublicStopInput = { name: string; instructions: string; location: LatLng; kinds: ('DROPOFF' | 'PICKUP')[]; photoUrl?: string; buildingId?: string; placeId?: string; origin?: 'manual' | 'suggestion'; suggestedZoneId?: string; polygon?: LatLng[] }
 export type StopReviewInput = Pick<PublicStop, 'status' | 'access' | 'accessibility' | 'revision'> & { notes: string; validDays: number }
 const fromPublicStop = (stop: import('../../backend/src/contracts').ApiPublicStop): PublicStop => ({ ...stop, location: fromPoint(stop.location) })
 export async function getPublicStops(token?: string, before?: string, signal?: AbortSignal) {
@@ -92,7 +92,7 @@ export async function getAllPublicStops(token: string, before?: string, signal?:
   const result = await http<import('../../backend/src/contracts').ApiPublicStopPage>('GET', `/api/public-stops?retired=true${before ? `&before=${encodeURIComponent(before)}` : ''}`, token, undefined, signal)
   return { ...result, stops: result.stops.map(fromPublicStop) }
 }
-export const submitPublicStop = async (token: string, input: PublicStopInput) => fromPublicStop(await http('POST', '/api/public-stops', token, { ...input, location: toPoint(input.location) }))
+export const submitPublicStop = async (token: string, input: PublicStopInput) => fromPublicStop(await http('POST', '/api/public-stops', token, { ...input, location: toPoint(input.location), polygon: input.polygon?.map(toPoint) }))
 export async function confirmPublicStop(token: string, id: string, fix: { location: LatLng; accuracy: number; timestamp: number }) {
   return fromPublicStop(await http('POST', `/api/public-stops/${id}/confirm`, token, { ...fix, location: toPoint(fix.location) }))
 }

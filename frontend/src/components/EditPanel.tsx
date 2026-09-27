@@ -104,15 +104,14 @@ function DefaultZoneCard({
   onCustomize: (z: Zone) => void
   onHide: (z: Zone) => void
 }) {
-  const door = building.entrances.find((e) => e.id === zone.entranceId)
   return (
     <div className="flex flex-col gap-3 rounded-2xl border border-shared/40 bg-shared/5 p-4">
       <div>
         <p className="m-0 text-xs font-bold text-shared">
-          {zone.source === 'generated' ? 'Auto-generated curb' : 'Design team zone'} · {building.name}
+          {zone.source === 'generated' ? 'Suggested curb' : 'Public zone'} · {building.name}
         </p>
         <h3 className="m-0 mt-1 text-base font-bold">{zone.name}</h3>
-        {door && <p className="m-0 text-sm text-muted">→ {door.label}</p>}
+        <p className="m-0 text-sm text-muted">The planner chooses the fastest suitable entrance.</p>
       </div>
       <p className="m-0 text-sm">Make your own copy to move or reshape it. Everyone else keeps seeing the original.</p>
       <div className="flex gap-2">
@@ -149,7 +148,6 @@ function ZoneForm({
     const kinds = on ? [...new Set([...zone.kinds, k])] : zone.kinds.filter((x) => x !== k)
     if (kinds.length > 0) onChange({ ...zone, kinds })
   }
-  const door = building.entrances.find((e) => e.id === zone.entranceId)
 
   return (
     <div className="flex flex-col gap-3.5 rounded-2xl border border-personal/40 bg-personal/5 p-4">
@@ -164,15 +162,7 @@ function ZoneForm({
       <Field label="Zone name">
         <input className={inputClass} value={zone.name} onChange={(e) => onChange({ ...zone, name: e.target.value })} />
       </Field>
-      <Field label="Door you want to use" hint={door ? `${door.accessible ? '♿ Step-free' : 'Has stairs'}${door.rooms.length ? ` · closest to rooms ${door.rooms.join(', ')}` : ''}` : undefined}>
-        <select className={inputClass} value={zone.entranceId} onChange={(e) => onChange({ ...zone, entranceId: e.target.value })}>
-          {building.entrances.map((e) => (
-            <option key={e.id} value={e.id}>
-              {e.label}
-            </option>
-          ))}
-        </select>
-      </Field>
+      <p className="m-0 text-sm text-muted">This zone serves the building as a whole. Each trip uses the fastest suitable entrance.</p>
       <div className="flex flex-wrap gap-x-5">
         {KINDS.map((k) => (
           <Switch key={k.value} checked={zone.kinds.includes(k.value)} onChange={(on) => toggleKind(k.value, on)} label={k.label} />

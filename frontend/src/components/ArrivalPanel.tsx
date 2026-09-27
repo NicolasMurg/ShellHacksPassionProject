@@ -6,7 +6,8 @@ import { StopOptionCard, StopConfirmation, type StopChoice } from './StopSelecti
 import type { ArrivalState } from '../state/arrivals'
 import { Button, Field, inputClass, Notice } from './ui'
 
-export function ArrivalPanel({ destination, state, token, onSignIn, kind, onKind, stepFree, onStepFree, user, ...search }: SearchControls & {
+export function ArrivalPanel({ destination, state, token, onSignIn, kind, onKind, stepFree, onStepFree, user, onPropose, ...search }: SearchControls & {
+  onPropose: (input: api.PublicStopInput) => void;
   user?: User; destination: api.ArrivalDestination; state: ArrivalState; token?: string; onSignIn: () => void;
   kind: 'dropoff' | 'pickup'; onKind: (kind: 'dropoff' | 'pickup') => void; stepFree: boolean; onStepFree: (v: boolean) => void
 }) {
@@ -25,6 +26,7 @@ export function ArrivalPanel({ destination, state, token, onSignIn, kind, onKind
     catch (e) { setError((e as Error).message) }
     finally { setSaving(false) }
   }
+  const propose = (value: NonNullable<ArrivalState['option']>) => onPropose({ name: value.name, instructions: value.instructions, location: value.stopPoint, kinds: [kind === 'pickup' ? 'PICKUP' : 'DROPOFF'], placeId: destination.placeId, origin: 'suggestion', suggestedZoneId: value.suggestedZoneId })
   const verb = kind === 'pickup' ? 'pickup' : 'drop-off'
   const choice = (value: NonNullable<ArrivalState['option']>): StopChoice => ({
     name: value.name, stopPoint: value.stopPoint, walkSeconds: value.walkSeconds, destinationLabel: destination.name,
@@ -46,6 +48,7 @@ export function ArrivalPanel({ destination, state, token, onSignIn, kind, onKind
     </div>}
     {state.moving && <Notice>Tap the map or drag the orange stop pin to choose a point within 500 m of the destination. We’ll check its route before you confirm.</Notice>}
     {option && state.confirmed ? <StopConfirmation option={choice(option)} kind={kind} onChange={state.change}>
+      {option.source !== 'public' && <Button onClick={() => propose(option)}>Propose as public zone</Button>}
       {!publicStop && (token ? <>
         <Field label="Private spot name"><input className={inputClass} value={spotName} onChange={e => setName(e.target.value)} maxLength={100} placeholder="My driveway or front gate" /></Field>
         <Field label="Arrival instructions"><input className={inputClass} value={spotInstructions} onChange={e => setInstructions(e.target.value)} maxLength={500} placeholder="Enter from the side street" /></Field>
@@ -55,7 +58,7 @@ export function ArrivalPanel({ destination, state, token, onSignIn, kind, onKind
       <ol className="m-0 flex list-none flex-col gap-2.5 p-0" aria-label="Pickup and drop-off options">
         {data.options.map((value, rank) => <StopOptionCard key={value.id} option={choice(value)} rank={rank}
           selected={value.id === option?.id} kind={kind} onSelect={() => state.select(value.id)}
-          onConfirm={state.confirm} disabled={state.moving || state.loading} />)}
+          onConfirm={state.confirm} onPropose={value.source !== 'public' ? () => propose(value) : undefined} disabled={state.moving || state.loading} />)}
       </ol>
     ) : !state.loading && !state.error && <Notice>{`No matching ${verb} routes are available. Try changing your preferences or choosing another destination.`}</Notice>}
     {data?.savedStop && token && <Button disabled={saving} onClick={() => void mutate(() => api.deleteStop(token, data.savedStop!.id), 'Saved preference removed.')}>Forget “{data.savedStop.name}”</Button>}

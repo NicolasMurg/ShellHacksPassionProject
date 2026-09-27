@@ -65,7 +65,7 @@ paths, deviations, stationary drift, driving, gaps, and saved-data validation.
 
 ## Public stops demo
 
-Use **Public stops** on the map. Sign in, choose **Add public stop**, tap its location,
+Use **Public zones** on the map. Sign in, choose **Add public zone**, tap its location,
 and submit a name, access instructions, pickup/drop-off types, and optional photo
 link. It appears for everyone as **Unverified** and is saved in the backend database.
 
@@ -93,3 +93,19 @@ an eligible stop's map icon selects its route option without replacing the origi
 destination. Newly submitted stops immediately appear in route suggestions as **Unverified**;
 admin approval changes that label to Verified. Disputed, retired, and restricted
 stops are excluded. Step-free-only requests still require verified step-free stops.
+
+### General-purpose zones
+
+Public stops and building zones now share one backend Zone model. Building
+association is optional, and the planner chooses an entrance separately for every
+trip by checking every eligible zone–entrance pair.
+
+Use **Propose as public zone** on a suggested option (or after confirming it) to
+open a prefilled proposal. Add instructions and optionally a building association.
+New map submissions can also draw an optional boundary. Nearby existing zones
+are offered to avoid duplicates. Submissions are persistent but remain Unverified
+until an independent administrator reviews them.
+
+The route map displays only the current plan's zone options, with the chosen pair
+highlighted. Clearing/changing the destination removes old options immediately.
+Public zones browsing and private editing explicitly show their relevant records.

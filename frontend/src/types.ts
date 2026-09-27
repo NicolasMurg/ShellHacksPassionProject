@@ -35,7 +35,7 @@ export type CurbAudit = {
 }
 
 /**
- * A curb area where the car stops for one entrance.
+ * A general-purpose stopping spot; routing chooses the fastest relevant entrance.
  *  - generated: made automatically for every entrance (nearest drivable road point)
  *  - design:    drawn or adjusted by our design team
  *  - personal:  made by one user; only they see it
@@ -43,7 +43,7 @@ export type CurbAudit = {
 export type Zone = {
   id: string
   buildingId: string
-  entranceId: string // the door this curb leads to
+  entranceId: string // historical editor hint; empty when unassociated
   source: 'generated' | 'design' | 'personal' | 'public'
   publicStopId?: string
   publicStopStatus?: 'VERIFIED' | 'UNVERIFIED'

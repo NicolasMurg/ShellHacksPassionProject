@@ -19,9 +19,9 @@ export type StopChoice = {
 }
 const formatDrive = (seconds: number) => `${Math.max(1, Math.round(seconds / 60))} min drive`
 
-export function StopOptionCard({ option, rank, selected, kind, onSelect, onConfirm, disabled = false }: {
+export function StopOptionCard({ option, rank, selected, kind, onSelect, onConfirm, onPropose, disabled = false }: {
   option: StopChoice; rank: number; selected: boolean; kind: TripKind;
-  onSelect: () => void; onConfirm: () => void; disabled?: boolean;
+  onSelect: () => void; onConfirm: () => void; onPropose?: () => void; disabled?: boolean;
 }) {
   const detailsId = useId()
   return <li className={cx('overflow-hidden rounded-2xl border bg-raised transition-colors',
@@ -44,6 +44,7 @@ export function StopOptionCard({ option, rank, selected, kind, onSelect, onConfi
       {!!option.warnings.length && <Notice>{option.warnings.join(' ')}</Notice>}
       <StreetViewPreview target={option.stopPoint} />
       <Button variant="primary" disabled={disabled} onClick={onConfirm}>Set {kind === 'pickup' ? 'pickup' : 'drop-off'} here</Button>
+      {onPropose && <Button disabled={disabled} onClick={onPropose}>Propose as public zone</Button>}
     </div>}
   </li>
 }

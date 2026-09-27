@@ -57,6 +57,8 @@ function Doorstep() {
 
   const publicStops = usePublicStops(token, user?.role === 'ADMIN')
   const [selectedPublicStopId, setSelectedPublicStopId] = useState<string>()
+  const [publicBoundary, setPublicBoundary] = useState<LatLng[]>([])
+  const [proposal, setProposal] = useState<Partial<api.PublicStopInput>>()
   const [publicStopDraft, setPublicStopDraft] = useState<LatLng>()
   const [panel, setPanel] = useState<Panel>('dropoff')
   const [tool, setTool] = useState<Tool>('none')
@@ -117,6 +119,8 @@ function Doorstep() {
   const clearSelection = () => {
     setSelectedPublicStopId(undefined)
     setPublicStopDraft(undefined)
+    setProposal(undefined)
+    setPublicBoundary([])
     arrival.reset()
     setSearchText('')
     setArrivalDestination(undefined)
@@ -174,7 +178,9 @@ function Doorstep() {
   }
 
   const handleMapClick = (point: LatLng, placeId?: string) => {
-    if (tool === 'addPublicStop') {
+    if (tool === 'drawPublicBoundary') {
+      setPublicBoundary(points => [...points, point])
+    } else if (tool === 'addPublicStop') {
       setPublicStopDraft(point)
       setTool('none')
     } else if (tool === 'addZone') {
@@ -209,6 +215,9 @@ function Doorstep() {
       return
     }
     if (panel !== 'dropoff') return
+    if (options.some(option => option.zone.id === zone.id)) {
+      setSelectedZoneId(zone.id); setConfirmedZoneId(undefined); setExpanded(true); return
+    }
     arrival.reset()
     setArrivalDestination(undefined)
     if (zone.buildingId !== destination?.building.id) {
@@ -223,6 +232,9 @@ function Doorstep() {
     setExpanded(true)
   }
 
+  const proposeZone = (input: api.PublicStopInput) => requireUser(() => {
+    clearSelection(); setProposal(input); setPublicStopDraft(input.location); setPanel('public'); setTool('none'); setExpanded(true)
+  })
   const editingZone = zones.find((z) => z.id === editingZoneId)
   const hiddenDefaults = campus.defaults.filter((z) => zoneStore.hiddenDefaultIds.has(z.id))
 
@@ -233,12 +245,13 @@ function Doorstep() {
         <main className="absolute inset-0" inert={tab !== 'map'}>
       <MapCanvas
         layers={layers}
-        publicStops={publicStops.stops.filter(stop => stop.status !== 'RETIRED')}
+        publicStops={panel === 'public' ? publicStops.stops.filter(stop => stop.status !== 'RETIRED') : []}
         nearbyPublicStops={panel !== 'dropoff' ? [] : arrivalDestination
           ? (arrival.data?.options ?? []).flatMap(option => option.publicStopId ? [{ id: option.publicStopId, status: option.publicStopStatus ?? 'UNVERIFIED', name: option.name, location: option.stopPoint }] : [])
           : options.flatMap(option => option.zone.publicStopId ? [{ id: option.zone.publicStopId, status: option.zone.publicStopStatus ?? 'UNVERIFIED', name: option.zone.name, location: option.zone.stopPoint }] : [])}
         activePublicStopId={panel !== 'dropoff' ? undefined : arrivalDestination ? arrival.option?.publicStopId : activeOption?.zone.publicStopId}
         publicStopDraft={publicStopDraft}
+        publicBoundary={publicBoundary}
         selectedPublicStopId={selectedPublicStopId}
         onSelectPublicStop={stop => {
           if (panel === 'dropoff' && arrivalDestination) {
@@ -256,7 +269,7 @@ function Doorstep() {
         liveWalk={walkedPaths.live}
         buildings={campus.buildings}
         entrances={campus.entrances}
-        zones={zones}
+        zones={panel === 'edit' ? zones : panel === 'dropoff' && !walking && !arrivalDestination ? options.map(o => o.zone) : []}
         closures={closureStore.closures}
         destination={panel === 'dropoff' ? mapDestination : undefined}
         arrivalStop={panel !== 'dropoff' ? undefined : arrivalDestination ? arrival.option?.stopPoint ?? arrival.draft : activeOption?.zone.source === 'public' ? activeOption.zone.stopPoint : undefined}
@@ -294,7 +307,7 @@ function Doorstep() {
         <div className="flex items-center gap-2">
           <Button className="bg-surface shadow-[var(--shadow-float)]" onClick={() => {
             clearSelection(); setPanel('public'); setTool('none'); setSelectedPublicStopId(undefined); setPublicStopDraft(undefined); setExpanded(true)
-          }}>Public stops</Button>
+          }}>Public zones</Button>
           <Legend />
           <LayerControl value={layers} onChange={setLayers} />
           <AccountMenu
@@ -339,6 +352,7 @@ function Doorstep() {
         {(authError || zoneStore.error || closureStore.error) && <Notice tone="error">{authError ?? zoneStore.error ?? closureStore.error}</Notice>}
         {panel === 'dropoff' && arrivalDestination && <ArrivalPanel
           key={`${arrivalDestination.placeId ?? ''}:${arrivalDestination.location.lat},${arrivalDestination.location.lng}:${token ?? ''}`}
+          onPropose={proposeZone}
           user={user} searchText={searchText}
           onSearchTextChange={text => { searchRequest.current?.abort(); setSearchText(text) }}
           onSearch={search} onClear={clearSelection}
@@ -347,6 +361,7 @@ function Doorstep() {
         />}
         {panel === 'dropoff' && !arrivalDestination && (
           <DropoffPanel
+            onPropose={zone => proposeZone({ name: zone.name, instructions: zone.instructions ?? '', location: zone.stopPoint, kinds: zone.kinds.map(k => k === 'pickup' ? 'PICKUP' : 'DROPOFF'), buildingId: zone.buildingId || undefined, origin: 'suggestion', suggestedZoneId: zone.source === 'generated' ? zone.id : undefined })}
             user={user}
             destination={destination}
             mode={mode}
@@ -383,13 +398,16 @@ function Doorstep() {
         )}
 
         {panel === 'public' && <PublicStopsPanel
+          buildings={campus.buildings} proposal={proposal} boundary={publicBoundary} drawing={tool === 'drawPublicBoundary'}
+          onDrawBoundary={() => setTool(tool === 'drawPublicBoundary' ? 'none' : 'drawPublicBoundary')}
+          onUndoBoundary={() => setPublicBoundary(points => points.slice(0, -1))}
           store={publicStops} user={user} token={token}
           selected={publicStops.stops.find(stop => stop.id === selectedPublicStopId)}
           draft={publicStopDraft} adding={tool === 'addPublicStop'}
-          onAdd={() => { setSelectedPublicStopId(undefined); setPublicStopDraft(undefined); setTool('addPublicStop') }}
+          onAdd={() => { setPublicBoundary([]); setProposal(undefined); setSelectedPublicStopId(undefined); setPublicStopDraft(undefined); setTool('addPublicStop') }}
           onSelect={stop => { setSelectedPublicStopId(stop?.id); setTool('none') }}
-          onCancelAdd={() => { setPublicStopDraft(undefined); setTool('none') }}
-          onDone={() => { setPanel('dropoff'); setTool('none'); setPublicStopDraft(undefined); setSelectedPublicStopId(undefined) }}
+          onCancelAdd={() => { setPublicBoundary([]); setPublicStopDraft(undefined); setTool('none') }}
+          onDone={() => { setPublicBoundary([]); setProposal(undefined); setPanel('dropoff'); setTool('none'); setPublicStopDraft(undefined); setSelectedPublicStopId(undefined) }}
           onSignIn={() => setTab('preferences')}
           onUse={stop => {
             clearSelection(); setArrivalDestination({ name: stop.name, location: stop.location, publicStopId: stop.id })

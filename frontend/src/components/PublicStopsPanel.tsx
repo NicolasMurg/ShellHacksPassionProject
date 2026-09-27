@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from 'react'
 import * as api from '../api'
-import type { LatLng, User } from '../types'
+import type { Building, LatLng, User } from '../types'
 import type { usePublicStops } from '../state/publicStops'
+import { distanceMeters } from '../geo'
 import { Button, Field, inputClass, Notice, Switch } from './ui'
 
 const labels = { UNVERIFIED: 'Unverified', VERIFIED: 'Verified', DISPUTED: 'Disputed', RETIRED: 'Retired' }
@@ -9,17 +10,19 @@ const accessLabels = { UNKNOWN: 'Not checked', PERMITTED: 'Public stopping permi
 const accessibilityLabels = { UNKNOWN: 'Not checked', STEP_FREE: 'Step-free stop', NOT_STEP_FREE: 'Not step-free' }
 type Props = {
   store: ReturnType<typeof usePublicStops>; user?: User; token?: string; selected?: api.PublicStop;
+  boundary: LatLng[]; drawing: boolean; onDrawBoundary: () => void; onUndoBoundary: () => void;
+  buildings: Building[]; proposal?: Partial<api.PublicStopInput>;
   draft?: LatLng; adding: boolean; onAdd: () => void; onSelect: (stop?: api.PublicStop) => void;
   onCancelAdd: () => void; onDone: () => void; onSignIn: () => void; onUse: (stop: api.PublicStop) => void;
 }
 export function PublicStopsPanel(p: Props) {
   return <>
     <header className="flex items-center justify-between gap-2">
-      <h1 className="m-0 text-xl font-extrabold">Public stops</h1><Button onClick={p.onDone}>Done</Button>
+      <h1 className="m-0 text-xl font-extrabold">Public zones</h1><Button onClick={p.onDone}>Done</Button>
     </header>
     <p className="m-0 text-sm text-muted">Shared pickup and drop-off locations for all destinations within a 500 m walk. New submissions appear in nearby route options labeled Unverified.</p>
     <div className="flex flex-wrap gap-2">
-      <Button variant="primary" onClick={p.user ? p.onAdd : p.onSignIn}>+ Add public stop</Button>
+      <Button variant="primary" onClick={p.user ? p.onAdd : p.onSignIn}>+ Add public zone</Button>
       <Button onClick={p.store.refresh}>Refresh</Button>
       {p.selected && <Button onClick={() => p.onSelect()}>All stops</Button>}
     </div>
@@ -27,7 +30,7 @@ export function PublicStopsPanel(p: Props) {
     {p.store.loading && <Notice>Loading public stops…</Notice>}
     {p.store.error && <Notice tone="error">{p.store.error}</Notice>}
     {p.adding && <Notice>Tap the map where the car can stop. <button type="button" className="underline" onClick={p.onCancelAdd}>Cancel</button></Notice>}
-    {p.draft && p.token && <Submission key={`${p.draft.lat},${p.draft.lng}`} point={p.draft} token={p.token}
+    {p.draft && p.token && <Submission key={`${p.draft.lat},${p.draft.lng}`} point={p.draft} token={p.token} buildings={p.buildings} proposal={p.proposal} boundary={p.boundary} drawing={p.drawing} onDrawBoundary={p.onDrawBoundary} onUndoBoundary={p.onUndoBoundary} nearby={p.store.stops}
       onCancel={p.onCancelAdd} onSaved={stop => { p.store.update(stop); p.onCancelAdd(); p.onSelect(stop) }} />}
     {p.selected && !p.draft && <StopDetails key={`${p.selected.id}:${p.selected.revision}`} stop={p.selected}
       token={p.token} user={p.user} onUpdated={p.store.update} onSignIn={p.onSignIn} onUse={p.onUse} />}
@@ -42,30 +45,37 @@ export function PublicStopsPanel(p: Props) {
     </div>}
   </>
 }
-function Submission({ point, token, onSaved, onCancel }: { point: LatLng; token: string; onSaved: (stop: api.PublicStop) => void; onCancel: () => void }) {
-  const [name, setName] = useState('')
-  const [instructions, setInstructions] = useState('')
+function Submission({ point, token, onSaved, onCancel, buildings, proposal, boundary, drawing, onDrawBoundary, onUndoBoundary, nearby }: { boundary: LatLng[]; drawing: boolean; onDrawBoundary: () => void; onUndoBoundary: () => void; nearby: api.PublicStop[]; buildings: Building[]; proposal?: Partial<api.PublicStopInput>; point: LatLng; token: string; onSaved: (stop: api.PublicStop) => void; onCancel: () => void }) {
+  const [name, setName] = useState(proposal?.name ?? '')
+  const [buildingId, setBuildingId] = useState(proposal?.buildingId ?? '')
+  const [instructions, setInstructions] = useState(proposal?.instructions ?? '')
   const [photoUrl, setPhotoUrl] = useState('')
-  const [dropoff, setDropoff] = useState(true)
-  const [pickup, setPickup] = useState(true)
+  const [dropoff, setDropoff] = useState(!proposal?.kinds || proposal.kinds.includes('DROPOFF'))
+  const [pickup, setPickup] = useState(!proposal?.kinds || proposal.kinds.includes('PICKUP'))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
   const submit = async (event: FormEvent) => {
     event.preventDefault(); setBusy(true); setError(undefined)
-    try { onSaved(await api.submitPublicStop(token, { name: name.trim(), instructions: instructions.trim(), location: point,
+    try { onSaved(await api.submitPublicStop(token, { ...proposal, polygon: boundary, buildingId: buildingId || undefined, name: name.trim(), instructions: instructions.trim(), location: point,
       kinds: [...(dropoff ? ['DROPOFF' as const] : []), ...(pickup ? ['PICKUP' as const] : [])], photoUrl: photoUrl.trim() || undefined })) }
     catch (error) { setError((error as Error).message) }
     finally { setBusy(false) }
   }
   return <form onSubmit={submit} className="flex flex-col gap-3 rounded-2xl border border-line p-3">
-    <h2 className="m-0 text-lg font-bold">New public stop</h2>
+    <h2 className="m-0 text-lg font-bold">Propose public zone</h2>
     <p className="m-0 text-xs text-muted">{point.lat.toFixed(5)}, {point.lng.toFixed(5)} · Visible to everyone as Unverified until reviewed. This stop is available to nearby destinations with its Unverified label.</p>
+    {nearby.filter(stop => distanceMeters(stop.location, point) < 15).map(stop => <Notice key={stop.id}>Nearby zone: {stop.name}. <button type="button" className="underline" onClick={() => onSaved(stop)}>Use existing zone</button></Notice>)}
+    {!proposal?.suggestedZoneId && <div className="flex flex-wrap gap-2"><Button onClick={onDrawBoundary}>{drawing ? 'Finish boundary' : 'Draw optional boundary'}</Button>{boundary.length > 0 && <Button onClick={onUndoBoundary}>Undo boundary point</Button>}</div>}
+    {drawing && <Notice>Tap the map to outline the zone with at least three points. The stopping pin stays in place.</Notice>}
+    {boundary.length > 0 && boundary.length < 3 && <Notice>Add at least three points, or undo to remove the boundary.</Notice>}
+    <Field label="Building (optional)"><select className={inputClass} value={buildingId} onChange={e => setBuildingId(e.target.value)}><option value="">General nearby stop</option>{buildings.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}</select></Field>
+    <p className="m-0 text-xs text-muted">The planner chooses the fastest entrance. Nearby destinations can also use this zone.</p>
     <Field label="Stop name"><input required minLength={2} maxLength={120} className={inputClass} value={name} onChange={e => setName(e.target.value)} /></Field>
     <Field label="Where should the car stop?"><textarea required minLength={3} maxLength={1000} className={inputClass} value={instructions} onChange={e => setInstructions(e.target.value)} placeholder="Curb location, signs, access hours, and approach instructions" /></Field>
     <Field label="Photo link (optional)"><input type="url" maxLength={2000} className={inputClass} value={photoUrl} onChange={e => setPhotoUrl(e.target.value)} placeholder="https://…" /></Field>
     <div className="flex gap-4"><Switch checked={dropoff} onChange={setDropoff} label="Drop-off" /><Switch checked={pickup} onChange={setPickup} label="Pickup" /></div>
     {error && <Notice tone="error">{error}</Notice>}
-    <div className="flex gap-2"><Button type="submit" variant="primary" disabled={busy || (!dropoff && !pickup)}>{busy ? 'Saving…' : 'Submit public stop'}</Button><Button onClick={onCancel} disabled={busy}>Cancel</Button></div>
+    <div className="flex gap-2"><Button type="submit" variant="primary" disabled={busy || drawing || (boundary.length > 0 && boundary.length < 3) || (!dropoff && !pickup)}>{busy ? 'Saving…' : 'Submit public zone'}</Button><Button onClick={onCancel} disabled={busy}>Cancel</Button></div>
   </form>
 }
 function StopDetails({ stop, token, user, onUpdated, onSignIn, onUse }: {

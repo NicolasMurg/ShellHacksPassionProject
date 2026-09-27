@@ -117,7 +117,7 @@ room prefixes and trip kinds, and calculates actual Google walking-path lengths
 before ranking. The walking model adjusts those lengths for pace, age, height,
 mobility, learned factor, and approximate indoor/floor time. Step-free requests
 and wheelchair/stroller profiles exclude entrances marked inaccessible. Maximum
-walk time is enforced; nearby reports add penalties and warnings. Unreachable
+walk time is enforced; applicable closure intersections exclude stopping routes. Unreachable
 candidates are skipped; provider/configuration failures return explicit errors.
 
 Closure geometry is used to flag proximity to the start point; this does not
@@ -141,7 +141,7 @@ References: [Routes API](https://developers.google.com/maps/documentation/routes
 ## Public stops and verification
 
 Public submissions, confirmations, reports, and review history live in the MongoDB
-`PublicStop` collection. Personal stops and campus zones keep their existing behavior.
+`Zone` collection alongside generated, design, and private zones. `/public-stops` remains a compatibility API over shared Zone records. Private arrival preferences remain in PersonalStop.
 After reviewing the deployment target, apply the additive schema with `bun run db:push`
 (no `--accept-data-loss`), then restart the API after `bun run db:generate`.
 
@@ -203,28 +203,49 @@ names are public; confirmer/reporter account IDs and GPS observations are not.
 race conditions, role revocation, GPS validation, expiry, and route eligibility.
 
 
-### Public stops serving nearby destinations
+### Unified zones and routing
 
-Public stops are reusable curb locations. They are not attached to the place or
-building selected when they were created. Both `/arrivals/plan` and campus `/plan`
-consider the five nearest eligible public stops within a 500 m straight-line radius,
-then require the actual Google walking route to be no longer than 500 m. Candidates
-may be Verified or Unverified, must not have restricted access, and must support
-the requested trip type. New submissions are immediately available as explicitly
-Unverified options; they are never automatically approved. Expired verification is
-also labeled Unverified. Step-free requests still require current verification and
-STEP_FREE accessibility. Disputed, retired, restricted, and route-blocked stops are excluded.
+Zone is the single stored model for generated suggestions, public stopping spots,
+and private zones. A zone has a stopPoint, optional polygon (empty for point-only
+spots), optional buildingId/placeId, and review/access/accessibility history.
+entranceId and rooms remain for old references but do not constrain routing.
+Building association is descriptive; eligible nearby destinations can reuse a zone.
 
-Arrival planning retains the selected destination, routes drop-offs from the stop
-to that destination, and reverses the walk for pickups. A private saved preference
-has priority, followed by verified public stops, unverified public stops, then generated
-alternatives. An explicitly moved pin continues to override automatic discovery.
-Returned public options include `publicStopId`, `publicStopStatus`, the stop name,
-and instructions. Named public stops remain distinct even when Google snaps two
-stop pins to the same road endpoint.
-Campus plans evaluate public stops against the destination building's entrances,
-choose the best entrance per public stop, and label the option `source: public`.
-These are plan-time options, not duplicated Zone records in the database.
+Both planners discover all eligible shared zones within 500 m, without a five-stop
+limit. Campus planning also loads associated building zones, merges private
+replacements, filters entrances by room/accessibility, then evaluates every
+zone–entrance combination in batches of three. Routes over 500 m or crossing
+applicable restrictions are excluded. It returns the fastest entrance per zone,
+ranked by walking time (with an accessible-entrance preference when requested).
+Pickup walks run entrance → stop; drop-offs run stop → entrance. Arrival planning
+ranks by walking time too; a manually moved pin overrides automatic discovery.
+Generated suggestions and community proposals remain unverified. Step-free-only
+plans require currently verified STEP_FREE zones and suitable entrances.
 
-This behavior needs no additional database schema change. Nearby-stop discovery is
-independent of the map list's pagination and of the admin review-queue filter.
+POST /api/public-stops accepts optional buildingId, placeId, polygon, origin
+(manual/suggestion), and suggestedZoneId. A generated zone is promoted in place:
+its ID, point, boundary and building association survive. New proposals get a Zone
+record with UNVERIFIED status; only administrator review grants verification.
+Repeated same-name proposals within 15 m return the existing zone. The creation
+UI also offers nearby existing zones before submission. Private zones cannot be
+promoted by another account or fetched through public endpoints.
+
+### Upgrade an existing database
+
+Stop older backend processes before the migration so they cannot write to the
+legacy PublicStop collection. From backend/ run:
+
+```sh
+bun run db:generate
+bun run db:unify-zones          # read-only counts
+bun run db:unify-zones --apply  # additive backfill/import
+bun run db:zone-indexes        # add two non-unique indexes; no drops
+```
+
+The migration preserves Zone IDs, imports legacy ObjectIds as equivalent string
+IDs, and keeps ownership, review evidence, statuses and timestamps. Existing zone
+metadata is filled only when absent. PublicStop is retained as a legacy archive;
+the application no longer reads or writes it. Reruns skip previously imported
+records and preserve subsequent edits. Review dry-run counts before applying.
+Existing clients can continue using /public-stops and publicStopId; both refer to
+Zone IDs. Updating the Prisma schema alone does not migrate existing records.

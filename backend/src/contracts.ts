@@ -4,7 +4,7 @@ import type { Building, Entrance, GeoPoint, User, Zone, RouteRestriction } from 
 export type ApiPoint = GeoPoint;
 export type ApiBuilding = Building & { entrances: Entrance[] };
 export type ApiEntrance = Entrance;
-export type ApiZone = Zone & { publicStopId?: string; publicStopStatus?: "VERIFIED" | "UNVERIFIED"; instructions?: string };
+export type ApiZone = Pick<Zone, "id" | "buildingId" | "entranceId" | "name" | "kinds" | "source" | "polygon" | "stopPoint" | "rooms" | "ownerId" | "basedOnZoneId" | "hidden" | "instructions"> & { publicStopId?: string; publicStopStatus?: "VERIFIED" | "UNVERIFIED"; instructions?: string };
 export type ApiUser = Pick<User, "id" | "name" | "email" | "profile" | "role">;
 export type ApiClosure = Omit<RouteRestriction, "createdAt" | "startsAt" | "endsAt"> & {
   createdAt: string; startsAt: string | null; endsAt: string | null; owner?: { id: string; name: string } | null;
@@ -24,14 +24,14 @@ export type ApiPersonalStop = {
   stopPoint: GeoPoint; name: string; instructions: string; updatedAt: string;
 };
 export type ApiArrivalPlan = {
-  options: { id: string; publicStopId?: string; publicStopStatus?: "VERIFIED" | "UNVERIFIED"; stopPoint: GeoPoint; source: "saved" | "suggested" | "manual" | "public";
+  options: { id: string; suggestedZoneId?: string; publicStopId?: string; publicStopStatus?: "VERIFIED" | "UNVERIFIED"; stopPoint: GeoPoint; source: "saved" | "suggested" | "manual" | "public";
     name: string; instructions: string; walkSeconds: number; walk: ApiRoute; drive?: ApiRoute;
     warnings: string[] }[];
   notices: string[]; savedStop: ApiPersonalStop | null; accessibilityVerified: false;
 };
 
 export type ApiPublicStop = {
-  id: string; name: string; instructions: string; location: ApiPoint;
+  id: string; name: string; instructions: string; location: ApiPoint; buildingId: string | null; placeId: string | null; origin: string;
   kinds: ("DROPOFF" | "PICKUP" | "BOTH")[]; photoUrl: string | null;
   status: "UNVERIFIED" | "VERIFIED" | "DISPUTED" | "RETIRED";
   access: "UNKNOWN" | "PERMITTED" | "RESTRICTED";

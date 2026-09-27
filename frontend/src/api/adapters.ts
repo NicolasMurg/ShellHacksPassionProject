@@ -12,7 +12,7 @@ export const fromEntrance = (e: ApiEntrance): Entrance => ({ ...e, location: fro
 export const fromBuilding = (b: ApiBuilding): Building => ({ ...b, location: fromPoint(b.location), entrances: b.entrances.map(fromEntrance) })
 export function fromZone(z: ApiZone): Zone {
   return {
-    id: z.id, buildingId: z.buildingId, entranceId: z.entranceId, name: z.name,
+    id: z.id, buildingId: z.buildingId ?? "", entranceId: z.entranceId ?? "", name: z.name,
     source: z.ownerId ? 'personal' : z.source === 'public' ? 'public' : z.source === 'generated' ? 'generated' : 'design',
     publicStopId: z.publicStopId, publicStopStatus: z.publicStopStatus, instructions: z.instructions,
     kinds: z.kinds.includes('BOTH') ? ['dropoff', 'pickup'] : z.kinds.map(k => k === 'DROPOFF' ? 'dropoff' : 'pickup'),

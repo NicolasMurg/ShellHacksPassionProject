@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
-import type { Prisma, PublicStop } from '@prisma/client';
+import type { Prisma, Zone } from '@prisma/client';
 import { prisma } from '../lib/prisma';
-import { HttpError, objectId, point } from '../lib/validation';
+import { sharedZoneWhere } from '../lib/publicStops';
+import { HttpError, id, point } from '../lib/validation';
 import { optionalAuth, requireAdmin, requireAuth } from '../middleware/auth';
 import { distanceMeters } from '../../../shared/geo';
 import type { ApiPublicStop } from '../contracts';
@@ -14,19 +15,22 @@ const access = z.enum(['UNKNOWN', 'PERMITTED', 'RESTRICTED']);
 const accessibility = z.enum(['UNKNOWN', 'STEP_FREE', 'NOT_STEP_FREE']);
 const submission = z.object({ name: z.string().trim().min(2).max(120), instructions: z.string().trim().min(3).max(1000),
   location: point, kinds: z.array(z.enum(['DROPOFF', 'PICKUP'])).min(1).max(2),
+  buildingId: id.optional(), placeId: z.string().min(1).max(300).optional(), suggestedZoneId: id.optional(),
+  origin: z.enum(["manual", "suggestion"]).default("manual"),
+  polygon: z.array(point).max(200).refine(p => !p.length || p.length >= 3).default([]),
   photoUrl: z.url().max(2000).refine(url => new URL(url).protocol === 'https:', 'Photo links must use HTTPS').optional(),
 }).strict();
 const mutationLimit = rateLimit({ windowMs: 60_000, limit: 30, keyGenerator: (_req, res) => res.locals.user.id, standardHeaders: 'draft-8', legacyHeaders: false,
   message: { error: 'Too many stop updates. Try again shortly.' } });
 
 /** A revision check keeps simultaneous reports, confirmations and reviews from overwriting one another. */
-async function update(stop: PublicStop, data: Prisma.PublicStopUpdateManyMutationInput): Promise<PublicStop> {
-  const changed = await prisma.publicStop.updateMany({ where: { id: stop.id, revision: stop.revision },
+async function update(stop: Zone, data: Prisma.ZoneUpdateManyMutationInput): Promise<Zone> {
+  const changed = await prisma.zone.updateMany({ where: { id: stop.id, revision: stop.revision },
     data: { ...data, revision: { increment: 1 } } });
   if (!changed.count) throw new HttpError(409, 'This stop changed. Refresh it and try again.');
-  return (await prisma.publicStop.findUniqueOrThrow({ where: { id: stop.id } }));
+  return (await prisma.zone.findUniqueOrThrow({ where: { id: stop.id } }));
 }
-async function expire(stop: PublicStop): Promise<PublicStop> {
+async function expire(stop: Zone): Promise<Zone> {
   if (stop.status !== 'VERIFIED' || (stop.verificationExpiresAt && stop.verificationExpiresAt > new Date())) return stop;
   try {
     return await update(stop, { status: 'UNVERIFIED', access: 'UNKNOWN', accessibility: 'UNKNOWN', reviews: { push: {
@@ -34,17 +38,17 @@ async function expire(stop: PublicStop): Promise<PublicStop> {
       access: 'UNKNOWN', accessibility: 'UNKNOWN', createdAt: new Date(),
     } } });
   } catch (error) {
-    if (error instanceof HttpError && error.status === 409) return prisma.publicStop.findUniqueOrThrow({ where: { id: stop.id } });
+    if (error instanceof HttpError && error.status === 409) return prisma.zone.findUniqueOrThrow({ where: { id: stop.id } });
     throw error;
   }
 }
 async function getStop(id: unknown) {
-  const stop = await prisma.publicStop.findUnique({ where: { id: objectId.parse(id) } });
+  const stop = await prisma.zone.findFirst({ where: { id: z.string().min(1).max(100).parse(id), AND: [sharedZoneWhere], source: { not: "generated" } } });
   if (!stop) throw new HttpError(404, 'Public stop not found');
   return expire(stop);
 }
-function response(stop: PublicStop, userId?: string): ApiPublicStop {
-  return { id: stop.id, name: stop.name, instructions: stop.instructions, location: stop.location, kinds: stop.kinds,
+function response(stop: Zone, userId?: string): ApiPublicStop {
+  return { id: stop.id, name: stop.name, instructions: stop.instructions, location: stop.stopPoint, buildingId: stop.buildingId, placeId: stop.placeId, origin: stop.origin, kinds: stop.kinds,
     photoUrl: stop.photoUrl, status: stop.status, access: stop.access, accessibility: stop.accessibility,
     confirmationCount: stop.confirmations.length, confirmedByMe: stop.confirmations.some(c => c.userId === userId),
     submittedByMe: stop.submittedBy === userId, reportedByMe: stop.reports.some(r => r.userId === userId && !r.resolvedAt),
@@ -55,11 +59,11 @@ function response(stop: PublicStop, userId?: string): ApiPublicStop {
     revision: stop.revision, createdAt: stop.createdAt.toISOString() };
 }
 publicStopRoutes.get('/', optionalAuth, async (req, res) => {
-  const query = z.object({ before: objectId.optional(), review: z.enum(['true', 'false']).optional(),
+  const query = z.object({ before: id.optional(), review: z.enum(['true', 'false']).optional(),
     retired: z.enum(['true', 'false']).optional() }).strict().parse(req.query);
   const admin = res.locals.user?.role === 'ADMIN';
   if ((query.review === 'true' || query.retired === 'true') && !admin) throw new HttpError(403, 'Administrator access required');
-  const stops = await prisma.publicStop.findMany({ where: {
+  const stops = await prisma.zone.findMany({ where: { AND: [sharedZoneWhere], source: { not: "generated" },
     ...(query.before && { id: { lt: query.before } }),
     ...(query.review === 'true' ? { OR: [ { status: { in: ['UNVERIFIED', 'DISPUTED'] } },
       { status: 'VERIFIED', verificationExpiresAt: { lte: new Date() } } ] } : query.retired === 'true' ? {} : { status: { not: 'RETIRED' } }),
@@ -71,10 +75,30 @@ publicStopRoutes.get('/:id', optionalAuth, async (req, res) => res.json(response
 publicStopRoutes.post('/', requireAuth, mutationLimit, async (req, res) => {
   const input = submission.parse(req.body);
   const user = res.locals.user;
-  const stop = await prisma.publicStop.create({ data: { ...input, submittedBy: user.id, confirmations: [], reports: [],
-    reviews: [{ actorId: user.id, actorName: user.name, status: 'UNVERIFIED', notes: 'Submitted for public review.',
-      access: 'UNKNOWN', accessibility: 'UNKNOWN', createdAt: new Date() }] } });
-  res.status(201).json(response(stop, user.id));
+  const { location, suggestedZoneId, ...fields } = input;
+  if (input.buildingId && !await prisma.building.findUnique({ where: { id: input.buildingId } })) throw new HttpError(400, 'Building not found');
+  const original = suggestedZoneId ? await prisma.zone.findFirst({ where: { id: suggestedZoneId, ...sharedZoneWhere } }) : null;
+  if (suggestedZoneId && !original) throw new HttpError(404, 'Suggested zone not found');
+  if (original && original.source !== 'generated') return res.status(200).json(response(await expire(original), user.id));
+  const stopPoint = original?.stopPoint ?? location;
+  // Reusing the same named proposal is idempotent; nearby distinct named curbs remain possible.
+  const duplicates = await prisma.zone.findMany({ where: { AND: [sharedZoneWhere], source: { not: 'generated' }, status: { not: 'RETIRED' } } });
+  const duplicate = duplicates.find(stop => stop.name.toLowerCase() === input.name.toLowerCase() && distanceMeters(
+    { lat: stop.stopPoint.coordinates[1]!, lng: stop.stopPoint.coordinates[0]! },
+    { lat: stopPoint.coordinates[1]!, lng: stopPoint.coordinates[0]! }) < 15);
+  if (duplicate) return res.status(200).json(response(await expire(duplicate), user.id));
+  const data = { ...fields, stopPoint, source: 'public', status: 'UNVERIFIED' as const, access: 'UNKNOWN' as const, accessibility: 'UNKNOWN' as const, verifiedBy: null, verifiedAt: null, verificationExpiresAt: null, origin: original ? 'suggestion' : input.origin,
+    buildingId: fields.buildingId ?? original?.buildingId, submittedBy: user.id,
+    reviews: [...(original?.reviews ?? []), { actorId: user.id, actorName: user.name, status: 'UNVERIFIED' as const, notes: original || input.origin === 'suggestion' ? 'Suggested spot proposed as a public zone.' : 'Submitted for public review.',
+      access: 'UNKNOWN' as const, accessibility: 'UNKNOWN' as const, createdAt: new Date() }] };
+  let stop;
+  if (original) {
+    const changed = await prisma.zone.updateMany({ where: { id: original.id, source: 'generated', revision: original.revision },
+      data: { ...data, polygon: original.polygon, revision: { increment: 1 } } });
+    if (!changed.count) throw new HttpError(409, 'This suggestion changed. Refresh and try again.');
+    stop = await prisma.zone.findUniqueOrThrow({ where: { id: original.id } });
+  } else stop = await prisma.zone.create({ data: { ...data, confirmations: [], reports: [] } });
+  res.status(original ? 200 : 201).json(response(stop, user.id));
 });
 publicStopRoutes.post('/:id/confirm', requireAuth, mutationLimit, async (req, res) => {
   const input = z.object({ location: point, accuracy: z.number().min(0).max(50), timestamp: z.number().int().positive() }).strict().parse(req.body);
@@ -86,7 +110,7 @@ publicStopRoutes.post('/:id/confirm', requireAuth, mutationLimit, async (req, re
   if (stop.confirmations.some(c => c.userId === userId)) throw new HttpError(409, 'You have already confirmed this stop.');
   if (stop.confirmations.length >= 1000) throw new HttpError(409, 'This stop has enough confirmations; it is ready for review.');
   const distance = distanceMeters({ lat: input.location.coordinates[1], lng: input.location.coordinates[0] },
-    { lat: stop.location.coordinates[1]!, lng: stop.location.coordinates[0]! });
+    { lat: stop.stopPoint.coordinates[1]!, lng: stop.stopPoint.coordinates[0]! });
   if (distance + input.accuracy > 100) throw new HttpError(400, 'You must be within 100 meters, including GPS accuracy, to confirm this stop.');
   res.json(response(await update(stop, { confirmations: { push: { userId, createdAt: new Date(), distanceMeters: distance } } }), userId));
 });
