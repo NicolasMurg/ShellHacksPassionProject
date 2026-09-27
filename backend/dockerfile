@@ -1,0 +1,23 @@
+# Doorstep backend (Bun + Express + Prisma) for DigitalOcean App Platform.
+# Build from the REPO ROOT (the backend imports ../shared):
+#   source directory "/", Dockerfile path "backend/Dockerfile".
+FROM oven/bun:1
+
+WORKDIR /app
+
+# Prisma's query engine needs OpenSSL, and its CLI (`prisma generate`, run on install) needs Node.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+COPY --from=node:22-bookworm-slim /usr/local/bin/node /usr/local/bin/node
+
+COPY shared ./shared
+COPY backend ./backend
+
+WORKDIR /app/backend
+RUN bun install
+
+ENV NODE_ENV=production
+# App Platform sets PORT for the container; the server reads it (defaults to 3000).
+EXPOSE 3000
+CMD ["bun", "src/index.ts"]

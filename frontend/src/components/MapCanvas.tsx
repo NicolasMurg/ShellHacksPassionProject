@@ -56,10 +56,9 @@ export function MapCanvas(props: Props) {
   const start = useStartCamera(colorScheme)
   const selectedEntranceId = selected?.entranceId ?? props.focusEntranceId
 
-  const selectedDoor = selectedEntranceId ? entrances.get(selectedEntranceId) : undefined
   // In walk mode also fit where the walk starts (demo start, or you).
   const walkOrigin = props.walkMode ? (props.walkStart?.location ?? me?.position) : undefined
-  useFitTo(destination, editMode ? undefined : selected, selectedDoor, walkOrigin, props.arrivalStop)
+  useFitTo(destination, walkOrigin)
 
   // Car markers only where they help: the destination's zones, or your own zones while editing.
   const showStopFor = (z: Zone) =>
@@ -335,41 +334,58 @@ function useStartCamera(colorScheme: string) {
 
 const MAX_FIT_ZOOM = 18
 
-/** Zoom to the destination building, the chosen curb and its door. */
-function useFitTo(destination?: Building, selected?: Zone, door?: Entrance, origin?: LatLng, arrivalStop?: LatLng) {
+/** Frame a destination once. Route results and pin edits must not move the camera. */
+function useFitTo(destination?: Building, origin?: LatLng) {
   const map = useMap()
-  const key = `${destination?.id}|${selected?.id}|${door?.id}|${origin ? 'walk' : 'car'}|${arrivalStop?.lat},${arrivalStop?.lng}`
+  const key = destination?.id
   const fittedFor = useRef<string>(undefined)
 
   useEffect(() => {
-    if (!map) return
-    // A rebuilt map (after a light/dark switch) already opens at the old view.
-    if (fittedFor.current === key) return
-    fittedFor.current = key
+    if (!map || fittedFor.current === key) return
     if (!destination) {
-      map.panTo(CAMPUS_CENTER)
-      map.setZoom(17)
+      fittedFor.current = undefined
       return
     }
-    const bounds = new google.maps.LatLngBounds()
-    bounds.extend(destination.location)
-    for (const e of destination.entrances) bounds.extend(e.location)
-    if (selected) bounds.extend(selected.stopPoint)
-    if (arrivalStop) bounds.extend(arrivalStop)
-    if (door) bounds.extend(door.location)
-    if (origin && distanceMeters(origin, destination.location) < 3000) bounds.extend(origin)
-    map.fitBounds(bounds, mapPadding())
-    // Doors are close together, so don't zoom in past street level.
-    const listener = google.maps.event.addListenerOnce(map, 'idle', () => {
-      if ((map.getZoom() ?? 0) > MAX_FIT_ZOOM) map.setZoom(MAX_FIT_ZOOM)
-    })
+    const frame = () => {
+      const projection = map.getProjection()
+      if (!projection) return
+      const points = [destination.location, ...destination.entrances.map(e => e.location)]
+      if (origin && distanceMeters(origin, destination.location) < 3000) points.push(origin)
+      const projected = points.map(p => projection.fromLatLngToPoint(new google.maps.LatLng(p))!)
+      // Keep nearby locations together even when they straddle the date line.
+      const anchorX = projected[0].x
+      const xs = projected.map(p => anchorX + ((p.x - anchorX + 384) % 256) - 128)
+      const ys = projected.map(p => p.y)
+      const west = Math.min(...xs), east = Math.max(...xs)
+      const north = Math.min(...ys), south = Math.max(...ys)
+      const padding = mapPadding()
+      const { clientWidth: width, clientHeight: height } = map.getDiv()
+      if (!width || !height) return
+      const usableWidth = Math.max(1, width - padding.left - padding.right)
+      const usableHeight = Math.max(1, height - padding.top - padding.bottom)
+      const zoom = Math.max(0, Math.min(MAX_FIT_ZOOM,
+        Math.log2(usableWidth / Math.max(east - west, 1e-9)),
+        Math.log2(usableHeight / Math.max(south - north, 1e-9))))
+      const scale = 2 ** zoom
+      const center = projection.fromPointToLatLng(new google.maps.Point(
+        (west + east) / 2 - (padding.left - padding.right) / (2 * scale),
+        (north + south) / 2 - (padding.top - padding.bottom) / (2 * scale),
+      ))
+      if (!center) return
+      fittedFor.current = key
+      // Set center and the already-capped zoom together. No fitBounds/idle correction.
+      map.moveCamera({ center, zoom })
+    }
+    frame()
+    if (fittedFor.current === key) return
+    const listener = google.maps.event.addListenerOnce(map, 'idle', frame)
     return () => listener.remove()
-    // Refit only when the destination or chosen zone changes, not on every render.
+    // Only a new destination reframes the map; keep the user's view during planning/editing.
   }, [map, key]) // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 /** Leave room for the panel so fitted content isn't hidden behind it. */
-function mapPadding(): google.maps.Padding {
+function mapPadding(): Required<google.maps.Padding> {
   const desktop = window.matchMedia('(min-width: 900px)').matches
   return desktop
     ? { top: 90, right: 80, bottom: 80, left: 470 }
