@@ -53,9 +53,10 @@ beforeAll(async () => {
     const body = JSON.parse(String(options?.body));
     calls.push({ url: String(url), body, headers: options?.headers });
     if (providerMode === "error") return Response.json({ error: { message: "SECRET upstream detail" } }, { status: 403 });
+    if (String(url).includes("places.googleapis.com") && body.textQuery === "123 Home Street") return Response.json({ places: [{ id: "house-place", displayName: { text: "123 Home Street" }, location: { latitude: 25.78, longitude: -80.39 } }, { id: "lower-campus-result", displayName: { text: "Campus result" }, location: { latitude: 25.75625, longitude: -80.37318 } }] });
     if (String(url).includes("places.googleapis.com")) return Response.json({ places: [{ id: "place-1", displayName: { text: "Campus cafe" }, location: { latitude: 25.75625, longitude: -80.37318 } }] });
     if (providerMode === "empty") return Response.json({ routes: [] });
-    const from = body.origin.location.latLng, to = { ...body.destination.location.latLng };
+    const from = body.origin.location.latLng, to = { ...(body.destination.location?.latLng ?? { latitude: 25.78, longitude: -80.39 }) };
     if (body.travelMode === "DRIVE") to.longitude -= 0.0002;
     return Response.json({ routes: [{ distanceMeters: 100, duration: "60s", polyline: { encodedPolyline: encode([from, to]) },
       legs: [{ endLocation: { latLng: to } }], warnings: ["Use caution"] }] });
@@ -155,7 +156,7 @@ test("closure reports identify authors by ID even when display names match", asy
   expect(created.body.owner.name).toBe("Alice");
   expect((await request(`/closures/${closureId}`, "DELETE", undefined, otherToken)).status).toBe(404);
 });
-test("search resolves rooms locally and uses campus-restricted Places only as fallback", async () => {
+test("search resolves rooms locally and supports Places beyond campus", async () => {
   const before = calls.length;
   const local = await request("/search?q=GC%20150");
   expect(local.body.building.id).toBe("gc"); expect(local.body.room).toBe("150");
@@ -163,12 +164,13 @@ test("search resolves rooms locally and uses campus-restricted Places only as fa
   expect(calls.length).toBe(before);
   const fallback = await request("/search?q=campus%20cafe");
   expect(fallback.body.building.id).toBe("gc");
-  expect(calls.at(-1)!.body.locationRestriction.rectangle).toBeDefined();
+  expect(calls.at(-1)!.body.locationRestriction).toBeUndefined();
   providerMode = "error";
   const failed = await request("/search?q=campus%20cafe");
   expect(failed.status).toBe(502); expect(failed.body.error).not.toContain("SECRET");
   providerMode = "ok";
   delete process.env.GOOGLE_SERVER_KEY;
+  delete process.env.GOOGLE_MAPS_API_KEY;
   expect((await request("/search?q=campus%20cafe")).status).toBe(503);
   process.env.GOOGLE_SERVER_KEY = "   ";
   process.env.GOOGLE_MAPS_API_KEY = "test-key";
@@ -224,7 +226,7 @@ test("the real frontend API adapters work against the backend across the full ma
   const closed = await api.reportClosure(session.token, [{ lat: 25.756, lng: -80.373 }, { lat: 25.7561, lng: -80.373 }], "Adapter report");
   expect(closed.reportedBy).toBe("Frontend User"); expect(closed.ownerId).toBe(session.user.id);
   const destination = await api.search("GC 150");
-  const plan = await api.plan({ buildingId: destination.building.id, room: destination.room, kind: "dropoff", stepFree: true }, session.token);
+  const plan = await api.plan({ buildingId: destination.building!.id, room: destination.room, kind: "dropoff", stepFree: true }, session.token);
   expect(plan.options[0]!.entrance.location.lat).toBeNumber();
   expect(plan.options[0]!.zone?.kinds).toContain("dropoff");
   expect(plan.options[0]!.route.path[0]!.lng).toBeNumber();
@@ -235,6 +237,70 @@ test("the real frontend API adapters work against the backend across the full ma
   await api.deleteMyZone(session.token, saved.id);
   await api.logout(session.token);
   await expect(api.getMe(session.token)).rejects.toThrow();
+});
+test("arrival planning supports arbitrary places, coordinate stops, and canonical frontend adapters", async () => {
+  const api = await import("../../frontend/src/api");
+  const found = await api.search("123 Home Street");
+  expect(found.building).toBeUndefined();
+  expect(found.destination!.location).toEqual({ lat: 25.78, lng: -80.39 });
+  const result = await api.planArrival({ destination: found.destination!, kind: 'dropoff', stepFree: true });
+  expect(result.options.length).toBeGreaterThan(0);
+  expect(result.options[0]!.stopPoint.lat).toBeNumber();
+  expect(result.options[0]!.drive).toBeUndefined(); // No fake ETA when GPS is unavailable.
+  expect(result.options[0]!.warnings.join(' ')).toContain('step-free route could not be verified');
+  expect(calls.some(c => c.body.destination?.placeId === 'house-place')).toBe(true);
+  expect(calls.some(c => c.body.destination?.vehicleStopover === true && c.body.destination?.sideOfRoad === true)).toBe(true);
+  const pickup = await api.planArrival({ destination: found.destination!, kind: 'pickup', stepFree: false,
+    origin: { lat: 25.779, lng: -80.389 }, stopPoint: { lat: 25.78, lng: -80.3901 } });
+  expect(pickup.options[0]!.walk.path[0]!.lat).toBeCloseTo(found.destination!.location.lat, 4);
+  expect(pickup.options[0]!.drive).toBeDefined();
+  const far = await request('/arrivals/plan', 'POST', { destination: { name: 'Home', location: { type: 'Point', coordinates: [-80.39, 25.78] } },
+    stopPoint: { type: 'Point', coordinates: [-80, 25] } });
+  expect(far.status).toBe(400);
+  providerMode = 'error';
+  try { expect((await request('/arrivals/plan', 'POST', { destination: { name: 'Home', location: { type: 'Point', coordinates: [-80.39, 25.78] } } })).status).toBe(502) }
+  finally { providerMode = 'ok' }
+});
+test("saved arrival points remain private, update across sessions, and are rechecked against closures", async () => {
+  const destination = { name: 'Home', placeId: 'home-private', location: { type: 'Point', coordinates: [-80.40, 25.79] } };
+  const stopPoint = { type: 'Point', coordinates: [-80.401, 25.79] };
+  const input = { destination, stopPoint, name: 'My driveway', instructions: 'Use the front gate' };
+  expect((await request('/me/stops', 'PUT', input)).status).toBe(401);
+  const saved = await request('/me/stops', 'PUT', input, token);
+  expect(saved.status).toBe(200);
+  expect(saved.body.ownerId).toBeUndefined();
+  const again = await request('/me/stops', 'PUT', { ...input, instructions: 'Meet at gate' }, token);
+  expect(again.body.id).toBe(saved.body.id);
+  expect((await request('/me/stops', 'GET', undefined, otherToken)).body).toHaveLength(0);
+  expect((await request(`/me/stops/${saved.body.id}`, 'DELETE', undefined, otherToken)).status).toBe(404);
+  const login = await request('/auth/login', 'POST', { email: 'alice@example.com', password: 'correct-password' });
+  const plan = await request('/arrivals/plan', 'POST', { destination: { ...destination, placeId: undefined } }, login.body.token);
+  expect(plan.status).toBe(200);
+  expect(plan.body.options[0].source).toBe('saved');
+  expect(plan.body.options[0].instructions).toBe('Meet at gate');
+  // A point report blocks the saved arrival while leaving the destination approach available.
+  const restriction = await prisma.routeRestriction.create({ data: { type: 'ROAD_CLOSED', geometryType: 'POINT',
+    points: [plan.body.options[0].stopPoint], reason: 'Gate temporarily blocked', ownerId: null } });
+  const changed = await request('/arrivals/plan', 'POST', { destination: { ...destination, placeId: undefined } }, token);
+  expect(changed.status).toBe(200);
+  expect(changed.body.options.every((o: any) => o.source !== 'saved')).toBe(true);
+  expect(changed.body.options.length).toBeGreaterThan(0);
+  expect(changed.body.notices.join(' ')).toContain('Your saved spot was excluded');
+  await prisma.routeRestriction.update({ where: { id: restriction.id }, data: { endsAt: new Date(Date.now() - 1000) } });
+  expect((await request('/arrivals/plan', 'POST', { destination: { ...destination, placeId: undefined } }, token)).body.options[0].source).toBe('saved');
+  await request(`/me/stops/${saved.body.id}`, 'DELETE', undefined, token);
+  expect((await request('/me/stops', 'GET', undefined, token)).body).toHaveLength(0);
+});
+test("closure geometry detects segment crossings and area interiors rather than only vertices", async () => {
+  const { touchesRestriction, geoPoint } = await import('../src/lib/arrivals');
+  const point = (lat: number, lng: number) => geoPoint({ lat, lng });
+  expect(touchesRestriction([point(25, -80.002), point(25, -79.998)], {
+    geometryType: 'PATH', points: [point(24.998, -80), point(25.002, -80)],
+  })).toBe(true);
+  expect(touchesRestriction([point(25, -80)], { geometryType: 'AREA',
+    points: [point(24.999, -80.001), point(25.001, -80.001), point(25.001, -79.999), point(24.999, -79.999)],
+  })).toBe(true);
+  expect(touchesRestriction([point(26, -81)], { geometryType: 'POINT', points: [point(25, -80)] })).toBe(false);
 });
 test("CORS, JSON errors, and expired sessions remain correct", async () => {
   const response = await nativeFetch(base + "/buildings", { method: "OPTIONS", headers: {

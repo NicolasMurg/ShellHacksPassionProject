@@ -38,7 +38,10 @@ type Props = {
   drivePath?: LatLng[]
   walkPath?: LatLng[]
   layers: MapLayers
-  onMapClick: (point: LatLng) => void
+  arrivalStop?: LatLng
+  movingArrival?: boolean
+  onMoveArrival: (point: LatLng) => void
+  onMapClick: (point: LatLng, placeId?: string) => void
   onSelectZone: (zone: Zone) => void
   onSelectBuilding: (b: Building) => void
   onZoneChange: (zone: Zone) => void
@@ -56,7 +59,7 @@ export function MapCanvas(props: Props) {
   const selectedDoor = selectedEntranceId ? entrances.get(selectedEntranceId) : undefined
   // In walk mode also fit where the walk starts (demo start, or you).
   const walkOrigin = props.walkMode ? (props.walkStart?.location ?? me?.position) : undefined
-  useFitTo(destination, editMode ? undefined : selected, selectedDoor, walkOrigin)
+  useFitTo(destination, editMode ? undefined : selected, selectedDoor, walkOrigin, props.arrivalStop)
 
   // Car markers only where they help: the destination's zones, or your own zones while editing.
   const showStopFor = (z: Zone) =>
@@ -84,9 +87,12 @@ export function MapCanvas(props: Props) {
       headingInteractionEnabled={false}
       gestureHandling="greedy"
       disableDefaultUI
-      clickableIcons={false}
-      draggableCursor={tool === 'none' ? undefined : 'crosshair'}
-      onClick={(e) => e.detail.latLng && props.onMapClick(e.detail.latLng)}
+      clickableIcons={!editMode && tool === 'none' && !props.movingArrival}
+      draggableCursor={tool === 'none' && !props.movingArrival ? undefined : 'crosshair'}
+      onClick={(e) => {
+        e.stop()
+        if (e.detail.latLng) props.onMapClick(e.detail.latLng, e.detail.placeId ?? undefined)
+      }}
     >
       {layers.traffic && <Overlay kind="traffic" />}
       {layers.transit && <Overlay kind="transit" />}
@@ -101,11 +107,17 @@ export function MapCanvas(props: Props) {
 
       {destination && !editMode && (
         <AdvancedMarker position={destination.location} zIndex={1}>
-          <div className="rounded-full bg-[#3a3f48] px-2.5 py-1.5 text-[11px] font-bold text-[#c9ced6] opacity-90" title="Where ride apps drop you today">
-            Address pin
+          <div className="rounded-full bg-[#3a3f48] px-2.5 py-1.5 text-[11px] font-bold text-[#c9ced6] opacity-90" title="Your destination">
+            Destination
           </div>
         </AdvancedMarker>
       )}
+
+      {props.arrivalStop && !editMode && <AdvancedMarker position={props.arrivalStop} zIndex={50}
+        draggable={props.movingArrival} title={props.movingArrival ? 'Drag to move the stop' : 'Suggested stopping point'}
+        onDragEnd={e => { const p = e.latLng?.toJSON(); if (p) props.onMoveArrival(p) }}>
+        <div className="pin-stop" style={{ borderColor: COLOR.selected, background: COLOR.selected }}>🚗</div>
+      </AdvancedMarker>}
 
       {/* Car route: you → curb */}
       {props.drivePath && !editMode && (
@@ -139,7 +151,7 @@ export function MapCanvas(props: Props) {
           selected={z.id === selectedZoneId}
           editing={z.id === editingZoneId}
           showStop={showStopFor(z)}
-          interactive={tool === 'none'}
+          interactive={tool === 'none' && !props.movingArrival}
           onSelect={() => props.onSelectZone(z)}
           onChange={props.onZoneChange}
         />
@@ -324,9 +336,9 @@ function useStartCamera(colorScheme: string) {
 const MAX_FIT_ZOOM = 18
 
 /** Zoom to the destination building, the chosen curb and its door. */
-function useFitTo(destination?: Building, selected?: Zone, door?: Entrance, origin?: LatLng) {
+function useFitTo(destination?: Building, selected?: Zone, door?: Entrance, origin?: LatLng, arrivalStop?: LatLng) {
   const map = useMap()
-  const key = `${destination?.id}|${selected?.id}|${door?.id}|${origin ? 'walk' : 'car'}`
+  const key = `${destination?.id}|${selected?.id}|${door?.id}|${origin ? 'walk' : 'car'}|${arrivalStop?.lat},${arrivalStop?.lng}`
   const fittedFor = useRef<string>(undefined)
 
   useEffect(() => {
@@ -343,6 +355,7 @@ function useFitTo(destination?: Building, selected?: Zone, door?: Entrance, orig
     bounds.extend(destination.location)
     for (const e of destination.entrances) bounds.extend(e.location)
     if (selected) bounds.extend(selected.stopPoint)
+    if (arrivalStop) bounds.extend(arrivalStop)
     if (door) bounds.extend(door.location)
     if (origin && distanceMeters(origin, destination.location) < 3000) bounds.extend(origin)
     map.fitBounds(bounds, mapPadding())

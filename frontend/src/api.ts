@@ -1,6 +1,6 @@
-import type { ApiBuilding, ApiClosure, ApiPlan, ApiRoute, ApiUser, ApiZone } from '../../backend/src/contracts'
+import type { ApiArrivalDestination, ApiArrivalPlan, ApiPersonalStop, ApiBuilding, ApiClosure, ApiPlan, ApiRoute, ApiUser, ApiZone } from '../../backend/src/contracts'
 import type { LatLng, User, WalkingProfile, Zone } from './types'
-import { fromBuilding, fromClosure, fromEntrance, fromRoute, fromUser, fromZone, toPoint, toZone } from './api/adapters'
+import { fromPoint, fromBuilding, fromClosure, fromEntrance, fromRoute, fromUser, fromZone, toPoint, toZone } from './api/adapters'
 
 export async function http<T>(method: string, path: string, token?: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, { method, signal,
@@ -43,8 +43,9 @@ export const reportClosure = async (token: string, path: LatLng[], reason: strin
   { type: 'ROAD_CLOSED', geometryType: 'PATH', points: path.map(toPoint), reason }))
 export const removeClosure = (token: string, id: string) => http<void>('DELETE', `/api/closures/${encodeURIComponent(id)}`, token)
 export async function search(text: string, signal?: AbortSignal) {
-  const result = await http<{ building: ApiBuilding; room: string }>('GET', `/api/search?q=${encodeURIComponent(text)}`, undefined, undefined, signal)
-  return { building: fromBuilding(result.building), room: result.room }
+  const result = await http<{ building?: ApiBuilding; room: string; destination?: ApiArrivalDestination }>('GET', `/api/search?q=${encodeURIComponent(text)}`, undefined, undefined, signal)
+  return { building: result.building ? fromBuilding(result.building) : undefined, room: result.room,
+    destination: result.destination ? { ...result.destination, location: fromPoint(result.destination.location) } : undefined }
 }
 export type PlanInput = { buildingId: string; room: string; kind: 'dropoff' | 'pickup' | 'walk'; stepFree: boolean; origin?: LatLng }
 export async function plan(input: PlanInput, token?: string, signal?: AbortSignal) {
@@ -59,3 +60,18 @@ export async function feedback(token: string, tripId: string, paceFeedback: 'fas
   return fromUser(result.user)
 }
 export const newId = (prefix: string) => `${prefix}-${crypto.randomUUID()}`
+
+export type ArrivalDestination = { name: string; location: LatLng; placeId?: string }
+export type ArrivalInput = { destination: ArrivalDestination; origin?: LatLng; stopPoint?: LatLng; stepFree: boolean; kind: 'dropoff' | 'pickup' }
+const toDestination = (d: ArrivalDestination): ApiArrivalDestination => ({ ...d, location: toPoint(d.location) })
+const fromStop = (s: ApiPersonalStop) => ({ ...s, destinationLocation: fromPoint(s.destinationLocation), stopPoint: fromPoint(s.stopPoint) })
+export async function planArrival(input: ArrivalInput, token?: string, signal?: AbortSignal) {
+  const result = await http<ApiArrivalPlan>('POST', '/api/arrivals/plan', token, { ...input,
+    kind: input.kind.toUpperCase(), destination: toDestination(input.destination), origin: input.origin && toPoint(input.origin),
+    stopPoint: input.stopPoint && toPoint(input.stopPoint) }, signal)
+  return { ...result, savedStop: result.savedStop ? fromStop(result.savedStop) : undefined,
+    options: result.options.map(o => ({ ...o, stopPoint: fromPoint(o.stopPoint), walk: fromRoute(o.walk), drive: o.drive && fromRoute(o.drive) })) }
+}
+export const saveStop = async (token: string, destination: ArrivalDestination, stopPoint: LatLng, name: string, instructions: string) =>
+  fromStop(await http<ApiPersonalStop>('PUT', '/api/me/stops', token, { destination: toDestination(destination), stopPoint: toPoint(stopPoint), name, instructions }))
+export const deleteStop = (token: string, id: string) => http<void>('DELETE', `/api/me/stops/${encodeURIComponent(id)}`, token)

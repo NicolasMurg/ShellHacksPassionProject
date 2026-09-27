@@ -21,10 +21,10 @@ const placesResponse = z.object({ places: z.array(z.object({
   location: z.object({ latitude: z.number(), longitude: z.number() }).optional(),
   googleMapsUri: z.string().optional(), attributions: z.array(z.object({ provider: z.string().optional(), providerUri: z.string().optional() })).optional(),
 })).default([]) });
-export async function searchPlaces(query: string) {
+export async function searchPlaces(query: string, campusOnly = true) {
   const result = placesResponse.safeParse(await googleRequest("https://places.googleapis.com/v1/places:searchText",
     "places.id,places.displayName,places.formattedAddress,places.location,places.googleMapsUri,places.attributions",
-    { textQuery: query, pageSize: 10, locationRestriction: { rectangle: { low: { latitude: 25.745, longitude: -80.39 }, high: { latitude: 25.765, longitude: -80.365 } } } }));
+    { textQuery: query, pageSize: 10, ...(campusOnly ? { locationRestriction: { rectangle: { low: { latitude: 25.745, longitude: -80.39 }, high: { latitude: 25.765, longitude: -80.365 } } } } : {}) }));
   if (!result.success) throw new HttpError(502, "Google Places returned an invalid response");
   return result.data.places.filter(p => p.location).map(p => ({
     id: p.id, name: p.displayName?.text ?? p.formattedAddress ?? p.id,
@@ -37,11 +37,11 @@ const routeResponse = z.object({ routes: z.array(z.object({
   legs: z.array(z.object({ endLocation: z.object({ latLng: z.object({ latitude: z.number(), longitude: z.number() }) }) })).optional(),
   polyline: z.object({ encodedPolyline: z.string() }), warnings: z.array(z.string()).default([]),
 })).default([]) });
-export async function computeRoute(origin: z.infer<typeof point>, destination: z.infer<typeof point>, travelMode: "WALK" | "DRIVE") {
+export async function computeRoute(origin: z.infer<typeof point>, destination: z.infer<typeof point>, travelMode: "WALK" | "DRIVE", arrival?: { placeId?: string; stopover?: boolean }) {
   const waypoint = (p: z.infer<typeof point>) => ({ location: { latLng: { latitude: p.coordinates[1], longitude: p.coordinates[0] } } });
   const result = routeResponse.safeParse(await googleRequest("https://routes.googleapis.com/directions/v2:computeRoutes",
     "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline,routes.warnings,routes.legs.endLocation",
-    { origin: waypoint(origin), destination: waypoint(destination), travelMode, units: "METRIC" }));
+    { origin: waypoint(origin), destination: arrival?.placeId ? { placeId: arrival.placeId } : { ...waypoint(destination), ...(arrival?.stopover && travelMode === "DRIVE" ? { vehicleStopover: true, sideOfRoad: true } : {}) }, travelMode, units: "METRIC" }));
   if (!result.success) throw new HttpError(502, "Google Routes returned an invalid response");
   const route = result.data.routes[0];
   if (!route) throw new HttpError(404, "No route found");

@@ -77,8 +77,8 @@ export function DropoffPanel(p: Props) {
         <input
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="Building and room, e.g. GC 150"
-          aria-label="Building and room"
+          placeholder="Address, place, or GC 150"
+          aria-label="Address, place, or building and room"
           enterKeyHint="go"
           className="h-full min-w-0 flex-1 bg-transparent font-medium placeholder:text-muted focus:outline-none"
         />
@@ -119,6 +119,8 @@ export function DropoffPanel(p: Props) {
       </div>
 
       {p.error && <Notice tone="error">{p.error}</Notice>}
+
+      {!p.destination && !p.error && <p className="m-0 text-sm text-muted">Search an address or tap a house or business on the map to choose an arrival point.</p>}
 
       {!p.destination && !p.error && (
         <div>

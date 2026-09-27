@@ -1,5 +1,7 @@
 import { APIProvider, useMap } from '@vis.gl/react-google-maps'
 import { useEffect, useRef, useState } from 'react'
+import { ArrivalPanel } from './components/ArrivalPanel'
+import { useArrival } from './state/arrivals'
 import { AccountMenu } from './components/Account'
 import { ClosurePanel } from './components/ClosurePanel'
 import { DropoffPanel } from './components/DropoffPanel'
@@ -59,6 +61,7 @@ function Doorstep() {
 
   // Drop-off planning
   const [destination, setDestination] = useState<Destination>()
+  const [arrivalDestination, setArrivalDestination] = useState<api.ArrivalDestination>()
   const [searchError, setSearchError] = useState<string>()
   const [mode, setMode] = useState<TravelMode>('dropoff')
   const [stepFreeChoice, setStepFreeChoice] = useState<boolean>()
@@ -92,7 +95,16 @@ function Doorstep() {
   const searchRequest = useRef<AbortController | undefined>(undefined)
   useEffect(() => () => searchRequest.current?.abort(), [])
 
+  const arrival = useArrival(arrivalDestination && panel === 'dropoff' ? {
+    destination: arrivalDestination, kind: mode === 'pickup' ? 'pickup' : 'dropoff', stepFree,
+    origin: geo.position ? { lat: +geo.position.lat.toFixed(4), lng: +geo.position.lng.toFixed(4) } : undefined,
+  } : undefined, token, JSON.stringify([user?.profile, closureStore.closures]))
+  const mapDestination = arrivalDestination ? { id: arrivalDestination.placeId ?? `point:${arrivalDestination.location.lat},${arrivalDestination.location.lng}`,
+    name: arrivalDestination.name, code: '', location: arrivalDestination.location, entrances: [] } : destination?.building
+
   const clearSelection = () => {
+    arrival.reset()
+    setArrivalDestination(undefined)
     searchRequest.current?.abort()
     setDestination(undefined)
     setSearchError(undefined)
@@ -111,6 +123,7 @@ function Doorstep() {
 
   const openPanel = (next: Panel) =>
     requireUser(() => {
+      clearSelection()
       setPanel(next)
       setTool(next === 'closure' ? 'drawClosure' : 'none')
       setDraftClosure([])
@@ -125,25 +138,32 @@ function Doorstep() {
     try {
       const result = await api.search(text, controller.signal)
       if (controller.signal.aborted) return
-      setDestination(result)
+      clearSelection()
+      if (result.building) setDestination({ building: result.building, room: result.room })
+      else if (result.destination) setArrivalDestination(result.destination)
       setSearchError(undefined)
       setSelectedZoneId(undefined)
       setSelectedDoorId(undefined)
       setConfirmedZoneId(undefined)
     } catch (e) {
       if (controller.signal.aborted) return
-      setDestination(undefined)
+      clearSelection()
       setSearchError((e as Error).message)
     }
   }
 
-  const handleMapClick = (point: LatLng) => {
+  const handleMapClick = (point: LatLng, placeId?: string) => {
     if (tool === 'addZone') {
       const zone = zoneStore.createAt(point)
       if (zone) setEditingZoneId(zone.id)
       setTool('none')
     } else if (tool === 'drawClosure') {
       setDraftClosure((d) => [...d, point])
+    } else if (panel === 'dropoff') {
+      if (arrivalDestination && arrival.moving) { arrival.moveTo(point); return }
+      clearSelection()
+      setArrivalDestination({ name: placeId ? 'Selected place' : 'Selected location', location: point, placeId })
+      setExpanded(true)
     }
   }
 
@@ -154,6 +174,8 @@ function Doorstep() {
       return
     }
     if (panel !== 'dropoff') return
+    arrival.reset()
+    setArrivalDestination(undefined)
     if (zone.buildingId !== destination?.building.id) {
       const building = campus.buildings.find((b) => b.id === zone.buildingId)
       if (building) setDestination({ building, room: '' })
@@ -177,15 +199,18 @@ function Doorstep() {
         entrances={campus.entrances}
         zones={zones}
         closures={closureStore.closures}
-        destination={panel === 'dropoff' ? destination?.building : undefined}
+        destination={panel === 'dropoff' ? mapDestination : undefined}
+        arrivalStop={panel === 'dropoff' && arrivalDestination ? arrival.option?.stopPoint ?? arrival.draft : undefined}
+        movingArrival={arrival.moving}
+        onMoveArrival={arrival.moveTo}
         selectedZoneId={walking && panel === 'dropoff' ? undefined : activeZoneId}
         focusEntranceId={activeDoor?.entrance.id}
         walkMode={walking && panel === 'dropoff'}
         walkStart={activeDoor && !walkStart.fromGps ? walkStart : undefined}
         editingZoneId={editingZone?.source === 'personal' ? editingZone.id : undefined}
         me={geo.position && { position: geo.position, accuracy: geo.accuracy }}
-        drivePath={walking ? undefined : drive?.path}
-        walkPath={walk?.path}
+        drivePath={arrivalDestination ? arrival.option?.drive?.path : walking ? undefined : drive?.path}
+        walkPath={arrivalDestination ? arrival.option?.walk.path : walk?.path}
         editMode={panel === 'edit'}
         tool={tool}
         draftClosure={draftClosure}
@@ -193,6 +218,7 @@ function Doorstep() {
         onSelectZone={handleSelectZone}
         onSelectBuilding={(b) => {
           searchRequest.current?.abort()
+          clearSelection()
           setDestination({ building: b, room: '' })
           setSearchError(undefined)
           setSelectedZoneId(undefined)
@@ -213,7 +239,7 @@ function Doorstep() {
             onReportClosure={() => openPanel('closure')}
           />
         </div>
-        {(destination || activeZoneId || editingZoneId || selectedDoorId) && (
+        {(arrivalDestination || destination || activeZoneId || editingZoneId || selectedDoorId) && (
           <Button
             className="bg-surface shadow-[var(--shadow-float)]"
             aria-label="Clear selected building and zone"
@@ -234,7 +260,12 @@ function Doorstep() {
         </div>
 
         {(authError || zoneStore.error || closureStore.error) && <Notice tone="error">{authError ?? zoneStore.error ?? closureStore.error}</Notice>}
-        {panel === 'dropoff' && (
+        {panel === 'dropoff' && arrivalDestination && <ArrivalPanel
+          key={`${arrivalDestination.placeId ?? ''}:${arrivalDestination.location.lat},${arrivalDestination.location.lng}:${token ?? ''}`}
+          destination={arrivalDestination} state={arrival} token={token} onSignIn={() => setTab('preferences')}
+          kind={mode === 'pickup' ? 'pickup' : 'dropoff'} onKind={setMode} stepFree={stepFree} onStepFree={setStepFreeChoice}
+        />}
+        {panel === 'dropoff' && !arrivalDestination && (
           <DropoffPanel
             user={user}
             destination={destination}
