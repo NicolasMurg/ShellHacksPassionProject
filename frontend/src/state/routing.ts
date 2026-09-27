@@ -1,13 +1,18 @@
 import * as api from '../api'
-import { useCallback, useEffect, useState } from 'react'
-import type { LatLng } from '../types'
-import { loadCampusGraph, type CampusGraph } from '../walkRouter'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { LatLng, Place } from '../types'
+import { loadCampusGraph, withShortcuts, type CampusGraph } from '../walkRouter'
+import { shortcutsOf, useDoorways } from './doorways'
 
 export type Geo = {
   position?: LatLng
   accuracy?: number
   /** Direction you're facing or moving, in degrees from north (compass, or GPS course). */
   heading?: number
+  /** The phone's own (Doppler) speed in m/s, when it reports one. */
+  speed?: number
+  /** When this fix was taken (ms), so each one is only counted once. */
+  timestamp?: number
   error?: string
   /** Phones that need permission for the compass (iOS) expose this; call it from a tap. */
   enableCompass?: () => void
@@ -50,6 +55,28 @@ function useCompass() {
   return { heading, needsPermission: needsPermission && !granted, enable }
 }
 
+/**
+ * Turns a typed address into a point. It asks for a driving route from the
+ * address to `toward` and reads where Google placed the start, so it works with
+ * the same Directions access the rest of the app already uses (no Geocoding API).
+ */
+export async function findAddress(routes: google.maps.RoutesLibrary, address: string, toward: LatLng): Promise<Place> {
+  let result: google.maps.DirectionsResult
+  try {
+    result = await new routes.DirectionsService().route({
+      origin: address,
+      destination: toward,
+      travelMode: google.maps.TravelMode.DRIVING,
+      region: 'us',
+    })
+  } catch {
+    throw new Error('Couldn’t find that address. Try adding the city, e.g. “Dolphin Mall, Miami”.')
+  }
+  const leg = result.routes[0]?.legs[0]
+  if (!leg?.start_location) throw new Error('Couldn’t find that address.')
+  return { location: leg.start_location.toJSON(), label: leg.start_address || address }
+}
+
 /** Live GPS position and heading (asks the browser for permission once). */
 export function useGeolocation(): Geo {
   const [geo, setGeo] = useState<Geo>(() => (navigator.geolocation ? {} : { error: 'Location is not supported in this browser' }))
@@ -58,10 +85,12 @@ export function useGeolocation(): Geo {
   useEffect(() => {
     if (!navigator.geolocation) return
     const id = navigator.geolocation.watchPosition(
-      ({ coords }) =>
+      ({ coords, timestamp }) =>
         setGeo((g) => ({
           position: { lat: coords.latitude, lng: coords.longitude },
           accuracy: coords.accuracy,
+          speed: coords.speed !== null && !Number.isNaN(coords.speed) ? coords.speed : undefined,
+          timestamp,
           // GPS only knows your course while you're moving; keep the last one otherwise.
           heading: coords.heading !== null && !Number.isNaN(coords.heading) && (coords.speed ?? 0) > 0.5 ? coords.heading : g.heading,
         })),
@@ -74,15 +103,25 @@ export function useGeolocation(): Geo {
   return { ...geo, heading: compass.heading ?? geo.heading, enableCompass: compass.needsPermission ? compass.enable : undefined }
 }
 
-/** The campus footpath network (for in-app walking navigation), once it has loaded. */
-export function useCampusGraph(): CampusGraph | undefined {
-  const [graph, setGraph] = useState<CampusGraph>()
+/**
+ * The campus footpath network, once it has loaded: `base` is the mapped paths alone,
+ * `graph` also has the user's linked doorways as shortcuts through buildings.
+ */
+export function useCampusGraphs(): { base?: CampusGraph; graph?: CampusGraph } {
+  const [base, setBase] = useState<CampusGraph>()
+  const doorways = useDoorways()
   useEffect(() => {
     loadCampusGraph()
-      .then(setGraph)
+      .then(setBase)
       .catch((err) => console.warn('Campus walkways unavailable, using Google for walks:', err))
   }, [])
-  return graph
+  const graph = useMemo(() => base && withShortcuts(base, shortcutsOf(doorways)), [base, doorways])
+  return { base, graph }
+}
+
+/** The campus footpath network with doorway shortcuts (for in-app walking navigation). */
+export function useCampusGraph(): CampusGraph | undefined {
+  return useCampusGraphs().graph
 }
 
 export type RouteInfo = { path: LatLng[]; seconds: number; meters: number; warnings: string[] }

@@ -5,10 +5,12 @@ import type { LatLng } from './types'
 // using A* search, and writes its own turn-by-turn directions. Google Directions
 // only knows a fraction of campus paths, so its walks take long detours.
 
-type Kind = 'walkway' | 'crossing' | 'steps' | 'service' | 'street' | 'major'
+// 'indoor' = a user-linked doorway shortcut through a building (see withShortcuts).
+type Kind = 'walkway' | 'crossing' | 'steps' | 'service' | 'street' | 'major' | 'indoor'
 
 /** How much each kind of path "costs" per meter. Lower = preferred. */
 const COST: Record<Kind, number> = {
+  indoor: 1,
   walkway: 1,
   crossing: 1.05,
   steps: 1.4,
@@ -18,7 +20,8 @@ const COST: Record<Kind, number> = {
 }
 
 export type WalkStep = { instruction: string; maneuver: string; startAlong: number; endAlong: number }
-export type WalkRoute = { path: LatLng[]; meters: number; steps: WalkStep[] }
+/** `indoorMeters` = how much of the walk goes through buildings via doorway shortcuts. */
+export type WalkRoute = { path: LatLng[]; meters: number; steps: WalkStep[]; indoorMeters: number }
 
 type Graph = {
   n: number
@@ -95,6 +98,114 @@ export function inCampus(g: Graph, p: LatLng): boolean {
 const toXY = (p: LatLng) => ({ x: (p.lng - LNG0) * KX, y: (p.lat - LAT0) * KY })
 const toLatLng = (x: number, y: number): LatLng => ({ lat: LAT0 + y / KY, lng: LNG0 + x / KX })
 
+/** A doorway farther than this from every mapped path can't be joined to the network. */
+export const MAX_DOOR_REACH_M = 60
+
+/** Nearest network node to a point, and how far away it is. */
+function nearestNode(g: Graph, p: LatLng) {
+  const { x, y } = toXY(p)
+  let node = -1
+  let meters = Infinity
+  for (let i = 0; i < g.n; i++) {
+    const d = Math.hypot(g.x[i] - x, g.y[i] - y)
+    if (d < meters) {
+      meters = d
+      node = i
+    }
+  }
+  return { node, meters }
+}
+
+/**
+ * Meters from a point to the nearest footpath, campus drive (service/street) and main road,
+ * so travel-mode detection knows whether a car could be here.
+ */
+export function surroundings(g: Graph, p: LatLng): { walkway: number; campusRoad: number; road: number } {
+  const { x, y } = toXY(p)
+  const near = { walkway: Infinity, campusRoad: Infinity, road: Infinity }
+  for (let e = 0; e < g.ea.length; e++) {
+    const k = g.kind[e]
+    const group = k === 'major' ? 'road' : k === 'service' || k === 'street' ? 'campusRoad' : 'walkway'
+    const a = g.ea[e]
+    const b = g.eb[e]
+    const dx = g.x[b] - g.x[a]
+    const dy = g.y[b] - g.y[a]
+    const l2 = dx * dx + dy * dy
+    const t = l2 === 0 ? 0 : Math.max(0, Math.min(1, ((x - g.x[a]) * dx + (y - g.y[a]) * dy) / l2))
+    const d = Math.hypot(x - (g.x[a] + t * dx), y - (g.y[a] + t * dy))
+    if (d < near[group]) near[group] = d
+  }
+  return near
+}
+
+/** How far a doorway is from the nearest mapped path (it's usable within MAX_DOOR_REACH_M). */
+export const distanceToNetwork = (g: Graph, p: LatLng) => nearestNode(g, p).meters
+
+/**
+ * The network plus user-linked doorway shortcuts: each linked doorway becomes a node joined
+ * to its nearest path node, and each link a straight "indoor" edge through the building.
+ * The base graph isn't modified.
+ */
+export function withShortcuts(g: Graph, shortcuts: { a: LatLng; b: LatLng }[]): Graph {
+  if (shortcuts.length === 0) return g
+  const nodes: LatLng[] = []
+  const edges: { a: number; b: number; kind: Kind; name?: string }[] = []
+  const nodeAt = new Map<string, number | undefined>()
+  const doorNode = (p: LatLng) => {
+    const key = `${p.lat},${p.lng}`
+    if (!nodeAt.has(key)) {
+      const near = nearestNode(g, p)
+      if (near.node < 0 || near.meters > MAX_DOOR_REACH_M) nodeAt.set(key, undefined)
+      else {
+        const id = g.n + nodes.length
+        nodes.push(p)
+        edges.push({ a: id, b: near.node, kind: 'walkway' })
+        nodeAt.set(key, id)
+      }
+    }
+    return nodeAt.get(key)
+  }
+  for (const s of shortcuts) {
+    const a = doorNode(s.a)
+    const b = doorNode(s.b)
+    if (a !== undefined && b !== undefined && a !== b) edges.push({ a, b, kind: 'indoor' })
+  }
+  if (nodes.length === 0) return g
+
+  const n = g.n + nodes.length
+  const grow = (from: Float64Array, extra: number[]) => {
+    const out = new Float64Array(from.length + extra.length)
+    out.set(from)
+    out.set(extra, from.length)
+    return out
+  }
+  const lat = grow(g.lat, nodes.map((p) => p.lat))
+  const lng = grow(g.lng, nodes.map((p) => p.lng))
+  const x = grow(g.x, nodes.map((p) => toXY(p).x))
+  const y = grow(g.y, nodes.map((p) => toXY(p).y))
+  const e0 = g.ea.length
+  const ea = new Int32Array(e0 + edges.length)
+  const eb = new Int32Array(e0 + edges.length)
+  ea.set(g.ea)
+  eb.set(g.eb)
+  const len = new Float64Array(e0 + edges.length)
+  len.set(g.len)
+  const kind = [...g.kind]
+  const name = [...g.name]
+  const adj = [...g.adj, ...nodes.map((): number[] => [])]
+  edges.forEach((edge, i) => {
+    const e = e0 + i
+    ea[e] = edge.a
+    eb[e] = edge.b
+    len[e] = Math.hypot(x[edge.b] - x[edge.a], y[edge.b] - y[edge.a])
+    kind[e] = edge.kind
+    name[e] = edge.name
+    adj[edge.a] = [...adj[edge.a], e] // copy, so the base graph's lists stay untouched
+    adj[edge.b] = [...adj[edge.b], e]
+  })
+  return { n, x, y, lat, lng, ea, eb, kind, name, len, adj, bbox: g.bbox }
+}
+
 type Snap = { edge: number; t: number; x: number; y: number; off: number }
 
 /** Nearest usable path segment to a point. */
@@ -164,12 +275,15 @@ class Heap {
   }
 }
 
-const cache = new Map<string, WalkRoute | null>()
+// One cache per graph: adding doorway shortcuts makes a new graph, so old routes can't leak in.
+const caches = new WeakMap<Graph, Map<string, WalkRoute | null>>()
 
 /** Shortest walk between two points on campus, or undefined if they aren't connected. */
 export function routeWalk(g: Graph, from: LatLng, to: LatLng, opts: { stepFree?: boolean } = {}): WalkRoute | undefined {
   const stepFree = !!opts.stepFree
   const key = `${from.lat.toFixed(5)},${from.lng.toFixed(5)}|${to.lat.toFixed(5)},${to.lng.toFixed(5)}|${stepFree}`
+  let cache = caches.get(g)
+  if (!cache) caches.set(g, (cache = new Map()))
   const hit = cache.get(key)
   if (hit !== undefined) return hit ?? undefined
   const result = search(g, from, to, stepFree)
@@ -257,7 +371,11 @@ function withDirections(g: Graph, raw: { p: LatLng; edge: number }[]): WalkRoute
   }
   const meters = pts[pts.length - 1]?.along ?? 0
   const path = pts.map((q) => q.p)
-  if (pts.length < 2) return { path, meters, steps: [] }
+  let indoorMeters = 0
+  for (let i = 1; i < pts.length; i++) {
+    if (pts[i].edge >= 0 && g.kind[pts[i].edge] === 'indoor') indoorMeters += pts[i].along - pts[i - 1].along
+  }
+  if (pts.length < 2) return { path, meters, steps: [], indoorMeters }
 
   // Direction of travel around a point, averaged over ~8 m to ignore tiny wiggles.
   const at = (along: number) => {
@@ -273,11 +391,15 @@ function withDirections(g: Graph, raw: { p: LatLng; edge: number }[]): WalkRoute
   const kindAfter = (i: number) => (i + 1 < pts.length ? (pts[i + 1].edge >= 0 ? g.kind[pts[i + 1].edge] : undefined) : undefined)
 
   const startBearing = bearingXY(pts[0].xy, at(10))
-  const firstName = labelOf(pts[1]?.edge ?? -1)
+  const firstEdge = pts[1]?.edge ?? -1
+  const firstName = labelOf(firstEdge)
+  const startsIndoors = firstEdge >= 0 && g.kind[firstEdge] === 'indoor'
   const maneuvers: { along: number; instruction: string; maneuver: string }[] = [
     {
       along: 0,
-      instruction: `Head ${COMPASS[Math.round(startBearing / 45) % 8]}${firstName ? ` on ${firstName}` : ''}`,
+      instruction: `Head ${COMPASS[Math.round(startBearing / 45) % 8]}${
+        startsIndoors ? ' through the building (doorway shortcut)' : firstName ? ` on ${firstName}` : ''
+      }`,
       maneuver: 'straight',
     },
   ]
@@ -286,7 +408,9 @@ function withDirections(g: Graph, raw: { p: LatLng; edge: number }[]): WalkRoute
     const here = pts[i]
     const kind = kindAfter(i)
     const sinceLast = here.along - maneuvers[maneuvers.length - 1].along
-    if (kind === 'steps' && lastKind !== 'steps' && sinceLast > 3) {
+    if (kind === 'indoor' && lastKind !== 'indoor' && sinceLast > 1) {
+      maneuvers.push({ along: here.along, instruction: 'Go through the building here (doorway shortcut)', maneuver: 'straight' })
+    } else if (kind === 'steps' && lastKind !== 'steps' && sinceLast > 3) {
       maneuvers.push({ along: here.along, instruction: 'Take the stairs', maneuver: 'straight' })
     } else if (kind === 'crossing' && lastKind !== 'crossing' && sinceLast > 3) {
       maneuvers.push({ along: here.along, instruction: 'Cross the street at the crosswalk', maneuver: 'straight' })
@@ -312,5 +436,5 @@ function withDirections(g: Graph, raw: { p: LatLng; edge: number }[]): WalkRoute
     startAlong: m.along,
     endAlong: maneuvers[i + 1]?.along ?? meters,
   }))
-  return { path, meters, steps }
+  return { path, meters, steps, indoorMeters }
 }

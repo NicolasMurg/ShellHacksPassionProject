@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { formatWalk } from '../geo'
 import type { Destination } from '../search'
-import type { DoorOption, StopOption, TravelMode, TripKind, User } from '../types'
+import type { DoorOption, Place, StopOption, TravelMode, TripKind, User } from '../types'
 import { walkingSpeed } from '../walking'
 import { StreetViewPreview } from './StreetViewPreview'
 import { cx } from './cx'
@@ -22,6 +22,10 @@ type Props = {
   /** Start in-app navigation: walk to a door (walk mode) or the confirmed car trip. */
   onStartWalk: (entranceId: string) => void
   onStartTrip: () => void
+  /** A typed starting address (any address); trips then start there. */
+  start?: Place
+  onStart: (address: string) => Promise<void>
+  onClearStart: () => void
   stepFree: boolean
   onStepFree: (v: boolean) => void
   options: StopOption[]
@@ -34,10 +38,14 @@ type Props = {
   onSignIn: () => void
   onFeedback: (f: 'faster' | 'right' | 'slower') => Promise<void>
   error?: string
-  /** Drive to the selected curb, from GPS or (without GPS) from the campus gate. */
-  drive?: { seconds: number; fromGps: boolean }
+  /** Drive to the selected curb, and where it starts ("you", a typed address, or the campus gate). */
+  drive?: { seconds: number; from: string }
   planning?: boolean
   feedbackSent?: boolean
+  /** Your GPS-measured walking pace this trip (walking stretches only), and the answer it points to. */
+  measuredWalk?: { speed: number; suggestion: 'faster' | 'right' | 'slower' }
+  /** Start coloring in your own drop-off/pickup spot for the destination. */
+  onMarkZone: () => void
 }
 
 function formatDrive(seconds: number) {
@@ -75,6 +83,7 @@ export function DropoffPanel(p: Props) {
         ]}
       />
 
+      <StartField start={p.start} onStart={p.onStart} onClear={p.onClearStart} />
       <form role="search" onSubmit={submit} className="flex h-13 items-center gap-1.5 rounded-full border border-line bg-raised pl-4 pr-1.5 focus-within:border-accent">
         <span aria-hidden className="text-lg text-muted">⌕</span>
         <input
@@ -155,9 +164,20 @@ export function DropoffPanel(p: Props) {
         </div>
       )}
 
+      {p.destination && !walking && (
+        <Button className="h-10 self-start text-sm" onClick={p.onMarkZone}>
+          <span aria-hidden>✏️</span>
+          Mark my {verb} spot
+        </Button>
+      )}
+
       {walking && p.destination && p.walkStart && (
         <p className="m-0 text-xs text-muted">
-          {p.walkStart.fromGps ? 'Walking from your location' : `You're off campus, so the walk starts at ${p.walkStart.label}`}
+          {p.start
+            ? `Walking from ${p.start.label}`
+            : p.walkStart.fromGps
+              ? 'Walking from your location'
+              : `You're off campus, so the walk starts at ${p.walkStart.label}`}
         </p>
       )}
 
@@ -188,6 +208,7 @@ export function DropoffPanel(p: Props) {
           onStart={p.onStartTrip}
           onFeedback={p.onFeedback}
           thanked={p.feedbackSent ?? false}
+          measured={p.measuredWalk}
         />
       ) : (
         p.destination &&
@@ -211,6 +232,75 @@ export function DropoffPanel(p: Props) {
         ))
       )}
     </>
+  )
+}
+
+/** "From" field: type any address to start the trip there. Empty = your GPS (or the campus gate). */
+function StartField({ start, onStart, onClear }: { start?: Place; onStart: (address: string) => Promise<void>; onClear: () => void }) {
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string>()
+
+  if (start) {
+    return (
+      <div className="flex h-13 items-center gap-2 rounded-full border border-line bg-raised pl-4 pr-1.5">
+        <span className="text-xs font-bold text-muted">From</span>
+        <span className="min-w-0 flex-1 truncate font-medium" title={start.label}>
+          {start.label}
+        </span>
+        <button
+          type="button"
+          aria-label="Clear starting address"
+          onClick={() => {
+            setText('')
+            onClear()
+          }}
+          className="size-8 rounded-full text-xl text-muted hover:text-fg"
+        >
+          ×
+        </button>
+      </div>
+    )
+  }
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!text.trim()) return
+    setBusy(true)
+    setError(undefined)
+    try {
+      await onStart(text.trim())
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <form onSubmit={submit} className="flex h-13 items-center gap-1.5 rounded-full border border-line bg-raised pl-4 pr-1.5 focus-within:border-accent">
+        <span className="text-xs font-bold text-muted">From</span>
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="Any address, e.g. Dolphin Mall"
+          aria-label="Starting address"
+          enterKeyHint="go"
+          autoComplete="street-address"
+          className="h-full min-w-0 flex-1 bg-transparent font-medium placeholder:text-muted focus:outline-none"
+        />
+        <button
+          type="submit"
+          disabled={!text.trim() || busy}
+          aria-label="Start from this address"
+          className="grid size-11 place-items-center rounded-full bg-accent text-lg font-black text-accent-ink disabled:bg-high disabled:text-muted"
+        >
+          {busy ? '…' : '→'}
+        </button>
+      </form>
+      {error && <Notice tone="error">{error}</Notice>}
+    </div>
   )
 }
 
@@ -316,7 +406,7 @@ function OptionCard({
         <p className="m-0 mt-2 text-sm">{option.reason}</p>
         {drive && (
           <p className="m-0 mt-2 text-sm font-semibold text-accent">
-            🚗 {formatDrive(drive.seconds)} {drive.fromGps ? 'from you' : 'from a demo start near campus'}
+            🚗 {formatDrive(drive.seconds)} from {drive.from}
           </p>
         )}
         {option.warnings.length > 0 && (
@@ -350,6 +440,7 @@ function Confirmed({
   onStart,
   onFeedback,
   thanked,
+  measured,
 }: {
   option: StopOption
   kind: TripKind
@@ -359,6 +450,7 @@ function Confirmed({
   onStart: () => void
   thanked: boolean
   onFeedback: (f: 'faster' | 'right' | 'slower') => Promise<void>
+  measured?: Props['measuredWalk']
 }) {
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string>()
@@ -392,6 +484,13 @@ function Confirmed({
           ) : (
             <>
               <p className="m-0 mb-2 text-sm font-semibold">Arrived? How did the walk compare?</p>
+              {measured && (
+                <p className="m-0 mb-2 text-xs text-muted">
+                  📍 Your GPS measured {measured.speed.toFixed(2)} m/s while walking (the ride doesn't count), so it looks{' '}
+                  <b>{measured.suggestion === 'right' ? 'about right' : measured.suggestion}</b>. That's highlighted; pick
+                  whatever matches.
+                </p>
+              )}
               <div className="flex gap-2">
                 {(
                   [
@@ -402,6 +501,7 @@ function Confirmed({
                 ).map(([f, label]) => (
                   <Button
                     key={f}
+                    variant={measured?.suggestion === f ? 'primary' : 'ghost'}
                     className="h-9 flex-1 text-sm"
                     disabled={sending}
                     onClick={async () => {

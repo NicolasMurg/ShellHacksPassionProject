@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { MAP_STYLES, type MapLayers, type MapStyle } from '../mapLayers'
 import { cx } from './cx'
-import { Switch } from './ui'
+import { Segmented, Switch } from './ui'
 
 // Small painted previews of each base map.
 const SWATCH: Record<MapStyle, string> = {
@@ -60,6 +60,26 @@ export function LayerControl({ value, onChange }: { value: MapLayers; onChange: 
           className="absolute right-0 top-13 flex w-72 flex-col gap-3 rounded-2xl border border-line bg-surface p-3 shadow-[var(--shadow-float)]"
         >
           <div className="flex flex-col gap-2">
+            <span className="px-1 text-xs font-bold uppercase tracking-wide text-muted">View</span>
+            <Segmented
+              label="Map view"
+              value={value.threeD ? '3d' : '2d'}
+              onChange={(v) => onChange({ ...value, threeD: v === '3d' })}
+              options={[
+                { value: '2d', label: '2D' },
+                { value: '3d', label: '3D' },
+              ]}
+            />
+            {value.threeD && (
+              <p className="m-0 px-1 text-xs text-muted">
+                Shift + drag to tilt and rotate (two fingers on a phone). Buildings rise as you zoom in, best on Dark or Light.
+              </p>
+            )}
+          </div>
+
+          <hr className="m-0 border-line" />
+
+          <div className="flex flex-col gap-2">
             <span className="px-1 text-xs font-bold uppercase tracking-wide text-muted">Map style</span>
             <div role="radiogroup" aria-label="Map style" className="grid grid-cols-3 gap-2">
               {(Object.keys(MAP_STYLES) as MapStyle[]).map((style) => {
@@ -90,6 +110,7 @@ export function LayerControl({ value, onChange }: { value: MapLayers; onChange: 
             <span className="text-xs font-bold uppercase tracking-wide text-muted">Overlays</span>
             <Switch checked={value.traffic} onChange={(traffic) => onChange({ ...value, traffic })} label="Traffic" />
             <Switch checked={value.transit} onChange={(transit) => onChange({ ...value, transit })} label="Transit lines" />
+            <Switch checked={value.grid} onChange={(grid) => onChange({ ...value, grid })} label="Grid (1000 × 1000)" />
           </div>
         </div>
       )}

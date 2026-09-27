@@ -10,9 +10,11 @@ export type MapLayers = {
   style: MapStyle
   traffic: boolean // live traffic on the roads
   transit: boolean // bus and rail lines
+  threeD: boolean // tilted view with 3D buildings, can be rotated
+  grid: boolean // the 1000 × 1000 grid over the FIU area (shared/grid.ts)
 }
 
-export const DEFAULT_LAYERS: MapLayers = { style: 'dark', traffic: false, transit: false }
+export const DEFAULT_LAYERS: MapLayers = { style: 'dark', traffic: false, transit: false, threeD: false, grid: false }
 
 /**
  * How each style maps onto Google's map type and color scheme.
@@ -35,6 +37,8 @@ function load(): MapLayers {
       style: saved.style && saved.style in MAP_STYLES ? saved.style : DEFAULT_LAYERS.style,
       traffic: saved.traffic === true,
       transit: saved.transit === true,
+      threeD: saved.threeD === true,
+      grid: saved.grid === true,
     }
   } catch {
     return DEFAULT_LAYERS

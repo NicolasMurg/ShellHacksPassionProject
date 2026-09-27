@@ -1,5 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
+import { measuredPace } from '../motion'
 import { useAuth } from '../state/auth'
+import { useMotion } from '../state/motion'
 import type { Mobility, Pace, User, WalkingProfile } from '../types'
 import { MOBILITY_LABEL, PACE_LABEL, walkingSpeed } from '../walking'
 import { cx } from './cx'
@@ -189,6 +191,95 @@ function SignIn({ onOpenMap }: { onOpenMap: () => void }) {
 
 const PROFILE_FIELDS = ['pace', 'age', 'heightCm', 'mobility'] as const
 
+type HeightUnit = 'in' | 'cm'
+const CM_PER_IN = 2.54
+const HEIGHT_UNIT_KEY = 'doorstep.heightUnit'
+// The backend stores whole centimeters from 80 to 230; the inch limits cover the same range.
+const HEIGHT_LIMITS: Record<HeightUnit, { min: number; max: number }> = { cm: { min: 80, max: 230 }, in: { min: 32, max: 90 } }
+
+function savedHeightUnit(): HeightUnit {
+  try {
+    const saved = localStorage.getItem(HEIGHT_UNIT_KEY)
+    if (saved === 'in' || saved === 'cm') return saved
+  } catch {
+    // Storage blocked: fall back to the locale's usual unit.
+  }
+  return navigator.language === 'en-US' ? 'in' : 'cm'
+}
+
+const feetAndInches = (inches: number) => `${Math.floor(inches / 12)}′${Math.round(inches % 12)}″`
+const toText = (heightCm: number | undefined, unit: HeightUnit) =>
+  heightCm === undefined ? '' : String(unit === 'cm' ? heightCm : Math.round(heightCm / CM_PER_IN))
+
+/**
+ * Height in inches or centimeters. It's always saved as whole centimeters; the field keeps
+ * what you typed in your unit so the number doesn't jump while you type.
+ */
+function HeightField({ heightCm, onChange }: { heightCm?: number; onChange: (heightCm?: number) => void }) {
+  const [unit, setUnit] = useState<HeightUnit>(savedHeightUnit)
+  const [text, setText] = useState(() => toText(heightCm, unit))
+
+  const pickUnit = (next: HeightUnit) => {
+    setUnit(next)
+    setText(toText(heightCm, next))
+    try {
+      localStorage.setItem(HEIGHT_UNIT_KEY, next)
+    } catch {
+      // Not remembered; still works this session.
+    }
+  }
+  const type = (value: string) => {
+    setText(value)
+    const n = value === '' ? undefined : Number(value)
+    onChange(n === undefined || Number.isNaN(n) ? undefined : Math.round(unit === 'cm' ? n : n * CM_PER_IN))
+  }
+
+  const inches = heightCm === undefined ? undefined : heightCm / CM_PER_IN
+  const hint =
+    inches === undefined
+      ? undefined
+      : unit === 'in'
+        ? `${feetAndInches(inches)} · ${heightCm} cm`
+        : `${feetAndInches(inches)} · ${Math.round(inches)} in`
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <label htmlFor="height" className="text-sm font-semibold">
+          Height
+        </label>
+        <div role="radiogroup" aria-label="Height unit" className="flex rounded-full bg-raised p-0.5 text-xs font-bold">
+          {(['in', 'cm'] as const).map((u) => (
+            <button
+              key={u}
+              type="button"
+              role="radio"
+              aria-checked={unit === u}
+              onClick={() => pickUnit(u)}
+              className={cx('rounded-full px-2.5 py-1 transition-colors', unit === u ? 'bg-high text-fg' : 'text-muted hover:text-fg')}
+            >
+              {u}
+            </button>
+          ))}
+        </div>
+      </div>
+      <input
+        id="height"
+        className={inputClass}
+        type="number"
+        inputMode="numeric"
+        min={HEIGHT_LIMITS[unit].min}
+        max={HEIGHT_LIMITS[unit].max}
+        step={1}
+        placeholder={unit === 'in' ? 'e.g. 68' : 'e.g. 173'}
+        value={text}
+        onChange={(e) => type(e.target.value)}
+      />
+      {hint && <span className="text-xs text-muted">{hint}</span>}
+    </div>
+  )
+}
+
 const PACE_ICON: Record<Pace, string> = { slow: '🐢', average: '🚶', fast: '🐇' }
 const MOBILITY_ICON: Record<Mobility, string> = { none: '👟', cane: '🦯', crutches: '🩼', wheelchair: '♿', stroller: '👶' }
 const MOBILITY_SHORT: Record<Mobility, string> = { none: 'No aid', cane: 'Cane', crutches: 'Crutches', wheelchair: 'Wheelchair', stroller: 'Stroller' }
@@ -232,6 +323,9 @@ function Preferences({ user, onOpenMap }: { user: User; onOpenMap: () => void })
 
   const speed = walkingSpeed(draft)
   const gauge = Math.min(1, Math.max(0, (speed - GAUGE_MIN) / (GAUGE_MAX - GAUGE_MIN)))
+  // Walking pace measured from GPS this session: walking stretches only, never rides or bikes.
+  const { walked } = useMotion()
+  const measured = measuredPace(walked, speed)
 
   return (
     <>
@@ -278,6 +372,11 @@ function Preferences({ user, onOpenMap }: { user: User; onOpenMap: () => void })
                 style={{ width: `${Math.round(gauge * 100)}%` }}
               />
             </div>
+            <p className="m-0 text-xs text-muted">
+              {measured
+                ? `📍 Your GPS measured ${measured.speed.toFixed(2)} m/s over ${Math.round(walked.meters)} m of walking (rides and bike stretches don't count). Rate your walk after a trip to teach Doorstep your pace.`
+                : "📍 Share your location and walk about 150 m to measure your real walking pace. Rides and bike stretches don't count."}
+            </p>
           </div>
         </Card>
 
@@ -295,17 +394,7 @@ function Preferences({ user, onOpenMap }: { user: User; onOpenMap: () => void })
             <Field label="Age">
               <input className={inputClass} type="number" min={5} max={110} placeholder="—" value={draft.age ?? ''} onChange={(e) => change({ age: num(e.target.value) })} />
             </Field>
-            <Field label="Height (cm)">
-              <input
-                className={inputClass}
-                type="number"
-                min={80}
-                max={230}
-                placeholder="—"
-                value={draft.heightCm ?? ''}
-                onChange={(e) => change({ heightCm: num(e.target.value) })}
-              />
-            </Field>
+            <HeightField heightCm={draft.heightCm} onChange={(heightCm) => change({ heightCm })} />
           </div>
         </Card>
 
