@@ -49,6 +49,7 @@ model User {
   name         String
   email        String             @unique
   passwordHash String?
+  stops        PersonalStop[]
   sessions     Session[]
   restrictions RouteRestriction[]
   trips        Trip[]
@@ -163,4 +164,21 @@ model TripFeedback {
   paceFeedback String?
   comment      String?
   createdAt    DateTime @default(now())
+}
+
+// A user's arrival preference, independent of campus buildings and shared zones.
+model PersonalStop {
+  id                  String   @id @default(auto()) @map("_id") @db.ObjectId
+  ownerId             String   @db.ObjectId
+  owner               User     @relation(fields: [ownerId], references: [id])
+  destinationKey      String
+  destinationLocation GeoPoint
+  placeId             String?
+  stopPoint           GeoPoint
+  name                String
+  instructions        String   @default("")
+  updatedAt           DateTime @updatedAt
+
+  @@unique([ownerId, destinationKey])
+  @@index([ownerId])
 }
