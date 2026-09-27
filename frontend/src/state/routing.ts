@@ -1,8 +1,9 @@
 import * as api from '../api'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { LatLng, Place } from '../types'
 import { loadCampusGraph, withShortcuts, type CampusGraph } from '../walkRouter'
 import { shortcutsOf, useDoorways } from './doorways'
+import type { WalkSample } from '../walkedPaths'
 
 export type Geo = {
   position?: LatLng
@@ -77,15 +78,17 @@ export async function findAddress(routes: google.maps.RoutesLibrary, address: st
   return { location: leg.start_location.toJSON(), label: leg.start_address || address }
 }
 
-/** Live GPS position and heading (asks the browser for permission once). */
-export function useGeolocation(): Geo {
+/** Live GPS position (asks the browser for permission once). */
+export function useGeolocation(onSample?: (sample: WalkSample) => void): Geo {
+  const sampleHandler = useRef(onSample)
+  useEffect(() => { sampleHandler.current = onSample }, [onSample])
   const [geo, setGeo] = useState<Geo>(() => (navigator.geolocation ? {} : { error: 'Location is not supported in this browser' }))
   const compass = useCompass()
 
   useEffect(() => {
     if (!navigator.geolocation) return
     const id = navigator.geolocation.watchPosition(
-      ({ coords, timestamp }) =>
+      ({ coords, timestamp }) => {
         setGeo((g) => ({
           position: { lat: coords.latitude, lng: coords.longitude },
           accuracy: coords.accuracy,
@@ -93,9 +96,11 @@ export function useGeolocation(): Geo {
           timestamp,
           // GPS only knows your course while you're moving; keep the last one otherwise.
           heading: coords.heading !== null && !Number.isNaN(coords.heading) && (coords.speed ?? 0) > 0.5 ? coords.heading : g.heading,
-        })),
+        }));
+        sampleHandler.current?.({ lat: coords.latitude, lng: coords.longitude, timestamp, accuracy: coords.accuracy, speed: coords.speed })
+      },
       (err) => setGeo((g) => ({ ...g, error: err.code === err.PERMISSION_DENIED ? 'Location permission denied' : 'Location unavailable' })),
-      { enableHighAccuracy: true, maximumAge: 10_000, timeout: 15_000 },
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 15_000 },
     )
     return () => navigator.geolocation.clearWatch(id)
   }, [])

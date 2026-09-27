@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
+import { zoneView } from "../lib/publicStops";
 import { id } from "../lib/validation";
 
 export const publicZones = { OR: [{ ownerId: null }, { ownerId: { isSet: false } }] };
@@ -10,5 +11,5 @@ dataRoutes.get("/buildings", async (_req, res) => {
 });
 dataRoutes.get("/zones", async (req, res) => {
   const query = z.object({ buildingId: id.optional() }).parse(req.query);
-  res.json(await prisma.zone.findMany({ where: { ...publicZones, hidden: false, ...query }, orderBy: { name: "asc" } }));
+  res.json((await prisma.zone.findMany({ where: { ...publicZones, hidden: false, ...query }, orderBy: { name: "asc" } })).map(zoneView));
 });

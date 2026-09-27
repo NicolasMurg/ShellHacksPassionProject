@@ -68,7 +68,7 @@ export const curbCheck = (stop: LatLng, door?: LatLng, signal?: AbortSignal) =>
   http<CurbAudit>('POST', '/api/ai/curb-check', undefined, { stop: toPoint(stop), door: door && toPoint(door) }, signal)
 export const parseTrip = (text: string, signal?: AbortSignal) => http<TripParse>('POST', '/api/ai/parse-trip', undefined, { text }, signal)
 
-export type ArrivalDestination = { name: string; location: LatLng; placeId?: string }
+export type ArrivalDestination = { name: string; location: LatLng; placeId?: string; publicStopId?: string }
 export type ArrivalInput = { destination: ArrivalDestination; origin?: LatLng; stopPoint?: LatLng; stepFree: boolean; kind: 'dropoff' | 'pickup' }
 const toDestination = (d: ArrivalDestination): ApiArrivalDestination => ({ ...d, location: toPoint(d.location) })
 const fromStop = (s: ApiPersonalStop) => ({ ...s, destinationLocation: fromPoint(s.destinationLocation), stopPoint: fromPoint(s.stopPoint) })
@@ -82,3 +82,28 @@ export async function planArrival(input: ArrivalInput, token?: string, signal?: 
 export const saveStop = async (token: string, destination: ArrivalDestination, stopPoint: LatLng, name: string, instructions: string) =>
   fromStop(await http<ApiPersonalStop>('PUT', '/api/me/stops', token, { destination: toDestination(destination), stopPoint: toPoint(stopPoint), name, instructions }))
 export const deleteStop = (token: string, id: string) => http<void>('DELETE', `/api/me/stops/${encodeURIComponent(id)}`, token)
+
+export type PublicStop = Omit<import('../../backend/src/contracts').ApiPublicStop, 'location'> & { location: LatLng }
+export type PublicStopInput = { name: string; instructions: string; location: LatLng; kinds: ('DROPOFF' | 'PICKUP')[]; photoUrl?: string; buildingId?: string; placeId?: string; origin?: 'manual' | 'suggestion'; suggestedZoneId?: string; polygon?: LatLng[] }
+export type StopReviewInput = Pick<PublicStop, 'status' | 'access' | 'accessibility' | 'revision'> & { notes: string; validDays: number }
+const fromPublicStop = (stop: import('../../backend/src/contracts').ApiPublicStop): PublicStop => ({ ...stop, location: fromPoint(stop.location) })
+export async function getPublicStops(token?: string, before?: string, signal?: AbortSignal) {
+  const result = await http<import('../../backend/src/contracts').ApiPublicStopPage>('GET', `/api/public-stops${before ? `?before=${encodeURIComponent(before)}` : ''}`, token, undefined, signal)
+  return { ...result, stops: result.stops.map(fromPublicStop) }
+}
+export async function getStopReviewQueue(token: string, before?: string, signal?: AbortSignal) {
+  const result = await http<import('../../backend/src/contracts').ApiPublicStopPage>('GET', `/api/public-stops?review=true${before ? `&before=${encodeURIComponent(before)}` : ''}`, token, undefined, signal)
+  return { ...result, stops: result.stops.map(fromPublicStop) }
+}
+export async function getAllPublicStops(token: string, before?: string, signal?: AbortSignal) {
+  const result = await http<import('../../backend/src/contracts').ApiPublicStopPage>('GET', `/api/public-stops?retired=true${before ? `&before=${encodeURIComponent(before)}` : ''}`, token, undefined, signal)
+  return { ...result, stops: result.stops.map(fromPublicStop) }
+}
+export const submitPublicStop = async (token: string, input: PublicStopInput) => fromPublicStop(await http('POST', '/api/public-stops', token, { ...input, location: toPoint(input.location), polygon: input.polygon?.map(toPoint) }))
+export async function confirmPublicStop(token: string, id: string, fix: { location: LatLng; accuracy: number; timestamp: number }) {
+  return fromPublicStop(await http('POST', `/api/public-stops/${id}/confirm`, token, { ...fix, location: toPoint(fix.location) }))
+}
+export const reportPublicStop = async (token: string, id: string, category: string, details: string) =>
+  fromPublicStop(await http('POST', `/api/public-stops/${id}/reports`, token, { category, details }))
+export const reviewPublicStop = async (token: string, id: string, input: StopReviewInput) =>
+  fromPublicStop(await http('POST', `/api/public-stops/${id}/review`, token, input))

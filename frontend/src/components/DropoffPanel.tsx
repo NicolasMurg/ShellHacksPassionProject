@@ -1,22 +1,22 @@
 import { useState, type FormEvent } from 'react'
+import { DestinationControls } from './DestinationControls'
+import { StopOptionCard, StopConfirmation, type StopChoice } from './StopSelection'
 import { formatWalk } from '../geo'
 import type { Destination } from '../search'
 import type { DoorOption, Place, StopOption, TravelMode, TripKind, User } from '../types'
-import { walkingSpeed } from '../walking'
 import { StreetViewPreview } from './StreetViewPreview'
 import { cx } from './cx'
-import { CarIcon, DoorIcon, LocateIcon, PencilIcon, SparkleIcon, WalkIcon, WheelchairIcon } from './icons'
+import { DoorIcon, LocateIcon, PencilIcon, SparkleIcon, WheelchairIcon } from './icons'
 import { ArriveBy, CurbCheck, SavedBadge, SlopeBadge, TripChips, WeatherNotice } from './Insights'
-import { Button, Notice, Segmented, Switch } from './ui'
+import { Button, Notice } from './ui'
 import type { TripParse } from '../api'
-import { looksLikeSentence } from '../search'
 import type { Slope, Weather } from '../state/insights'
 
 const QUICK_PICKS = ['GC 150', 'Green Library 420', 'CASE 241', 'PC 110']
 const AI_EXAMPLE = "Drop me at Graham Center by the food court at 9, I'm on crutches"
-const GENERATED_WARNING = 'This generated stop has not been checked for legal or safe stopping.'
 
 type Props = {
+  onPropose: (zone: StopOption["zone"]) => void
   user?: User
   destination?: Destination
   mode: TravelMode
@@ -40,6 +40,8 @@ type Props = {
   onSelect: (zoneId: string) => void
   confirmedZoneId?: string
   onConfirm: (zoneId?: string) => void
+  searchText: string
+  onSearchTextChange: (text: string) => void
   onSearch: (text: string) => void
   onClear: () => void
   onSignIn: () => void
@@ -63,101 +65,23 @@ type Props = {
   aiBusy?: boolean
 }
 
-function formatDrive(seconds: number) {
-  return `${Math.max(1, Math.round(seconds / 60))} min drive`
-}
-
 /** The "My car → Targeted drop-off" screen, plus walk mode for arriving on foot. */
 export function DropoffPanel(p: Props) {
-  const [text, setText] = useState('')
   const walking = p.mode === 'walk'
   const kind: TripKind = p.mode === 'pickup' ? 'pickup' : 'dropoff'
   const verb = kind === 'dropoff' ? 'drop-off' : 'pickup'
   const confirmed = walking ? undefined : p.options.find((o) => o.zone.id === p.confirmedZoneId)
 
-  const submit = (e: FormEvent) => {
-    e.preventDefault()
-    if (text.trim()) p.onSearch(text.trim())
-  }
-
   return (
     <>
-      <header>
-        <p className="m-0 text-xs font-semibold text-muted">{walking ? 'On foot ›' : 'My car ›'}</p>
-        <h1 className="m-0 text-xl font-extrabold tracking-tight">{walking ? 'Walk to the right door' : `Targeted ${verb}`}</h1>
-      </header>
-
-      <Segmented
-        label="How are you getting there?"
-        value={p.mode}
-        onChange={p.onMode}
-        options={[
-          { value: 'dropoff', label: 'Drop-off' },
-          { value: 'pickup', label: 'Pickup' },
-          { value: 'walk', label: 'Walk' },
-        ]}
+      <DestinationControls
+        user={p.user} mode={p.mode} onMode={p.onMode} allowWalking
+        searchText={p.searchText} onSearchTextChange={p.onSearchTextChange} onSearch={p.onSearch} onClear={p.onClear}
+        stepFree={p.stepFree} onStepFree={p.onStepFree} onSignIn={p.onSignIn}
+        destinationName={p.destination?.building.name} room={p.destination?.room}
       />
 
       <StartField start={p.start} onStart={p.onStart} onClear={p.onClearStart} />
-      <form role="search" onSubmit={submit} className="flex h-13 items-center gap-1.5 rounded-full border border-line bg-raised pl-4 pr-1.5 focus-within:border-accent">
-        {/* Lights up once you type a sentence: that's when Gemini reads the request. */}
-        <SparkleIcon
-          size={18}
-          className={cx('shrink-0 transition-opacity', looksLikeSentence(text) ? 'opacity-100' : 'opacity-45')}
-        />
-        {looksLikeSentence(text) && <span className="sr-only">Gemini will read this request</span>}
-        <input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="Address, GC 150, or just say it"
-          aria-label="Address, place, or building and room"
-          enterKeyHint="go"
-          className="h-full min-w-0 flex-1 bg-transparent font-medium placeholder:text-muted focus:outline-none"
-        />
-        {text && (
-          <button
-            type="button"
-            aria-label="Clear"
-            onClick={() => {
-              setText('')
-              p.onClear()
-            }}
-            className="size-8 rounded-full text-xl text-muted hover:text-fg"
-          >
-            ×
-          </button>
-        )}
-        <button
-          type="submit"
-          disabled={!text.trim()}
-          aria-label="Find the right entrance"
-          className="grid size-11 place-items-center rounded-full bg-accent text-lg font-black text-accent-ink disabled:bg-high disabled:text-muted"
-        >
-          →
-        </button>
-      </form>
-
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <Switch
-          checked={p.stepFree}
-          onChange={p.onStepFree}
-          label={
-            <span className="flex items-center gap-1.5">
-              <WheelchairIcon size={18} className="text-accent" /> Step-free only
-            </span>
-          }
-        />
-        {p.user ? (
-          <span className="text-xs text-muted">
-            Your pace: {walkingSpeed(p.user.profile).toFixed(2)} m/s
-          </span>
-        ) : (
-          <button type="button" onClick={p.onSignIn} className="text-xs font-semibold text-accent hover:underline">
-            Sign in for personal walk times
-          </button>
-        )}
-      </div>
-
       {p.aiBusy && (
         <p className="m-0 flex items-center gap-1.5 text-sm font-semibold text-accent">
           <SparkleIcon size={16} className="motion-safe:animate-pulse" /> Gemini is reading your request…
@@ -178,7 +102,7 @@ export function DropoffPanel(p: Props) {
                 key={q}
                 type="button"
                 onClick={() => {
-                  setText(q)
+                  p.onSearchTextChange(q)
                   p.onSearch(q)
                 }}
                 className="h-10 rounded-full border border-line bg-raised px-3.5 font-semibold hover:border-accent"
@@ -189,7 +113,7 @@ export function DropoffPanel(p: Props) {
             <button
               type="button"
               onClick={() => {
-                setText(AI_EXAMPLE)
+                p.onSearchTextChange(AI_EXAMPLE)
                 p.onSearch(AI_EXAMPLE)
               }}
               className="flex min-h-10 items-center gap-1.5 rounded-full border border-accent/40 bg-accent/10 px-3.5 py-1.5 text-left text-sm font-semibold text-accent hover:border-accent"
@@ -197,15 +121,6 @@ export function DropoffPanel(p: Props) {
               <SparkleIcon size={16} className="shrink-0" /> “{AI_EXAMPLE}”
             </button>
           </div>
-        </div>
-      )}
-
-      {p.destination && (
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-base font-bold">{p.destination.building.name}</span>
-          {p.destination.room && (
-            <span className="rounded-full bg-accent/15 px-2.5 py-0.5 text-xs font-bold text-accent">Rm {p.destination.room}</span>
-          )}
         </div>
       )}
 
@@ -226,7 +141,7 @@ export function DropoffPanel(p: Props) {
         </p>
       )}
 
-      {p.destination && p.planning && !p.error && <Notice>Calculating walking routes…</Notice>}
+      {p.destination && p.planning && !p.error && <Notice>{walking ? 'Calculating walking routes…' : 'Finding pickup and drop-off options…'}</Notice>}
 
       {p.destination && !p.planning && (
         <WeatherNotice weather={p.weather} walkSeconds={(walking ? p.doors[0] : p.options[0])?.walkSeconds} />
@@ -265,27 +180,30 @@ export function DropoffPanel(p: Props) {
       ) : (
         p.destination &&
         (p.options.length === 0 ? (
-          !p.error && !p.planning && <Notice>{`No matching ${verb} routes are available. Try another entrance preference or destination.`}</Notice>
+          !p.error && !p.planning && <Notice>{`No matching ${verb} routes are available. Try changing your preferences or choosing another destination.`}</Notice>
         ) : (
           <ol className="m-0 flex list-none flex-col gap-2.5 p-0">
             {p.options.map((o, i) => (
-              <OptionCard
+              <StopOptionCard
                 key={o.zone.id}
-                option={o}
+                option={stopChoice(o, o.zone.id === p.selectedZoneId ? p.drive : undefined)}
                 rank={i}
                 selected={o.zone.id === p.selectedZoneId}
-                verb={verb}
-                drive={o.zone.id === p.selectedZoneId ? p.drive : undefined}
-                saved={p.saved?.get(o.zone.id)}
-                slope={o.zone.id === p.selectedZoneId && p.stepFree ? p.slope : undefined}
-                arriveBy={o.zone.id === p.selectedZoneId ? (p.ai?.parse.arriveBy ?? undefined) : undefined}
+                kind={kind}
                 onSelect={() => p.onSelect(o.zone.id)}
                 onConfirm={() => p.onConfirm(o.zone.id)}
-              />
+                onPropose={o.zone.source === 'generated' ? () => p.onPropose(o.zone) : undefined}
+                summary={<SavedBadge seconds={p.saved?.get(o.zone.id)} />}
+              >
+                {p.ai?.parse.arriveBy && <ArriveBy hhmm={p.ai.parse.arriveBy} driveSeconds={p.drive?.seconds} walkSeconds={o.walkSeconds} />}
+                <CurbCheck stop={o.zone.stopPoint} door={o.entrance.location} />
+                <SlopeBadge slope={p.stepFree ? p.slope : undefined} />
+              </StopOptionCard>
             ))}
           </ol>
         ))
       )}
+      {confirmed?.zone.source === 'generated' && <Button onClick={() => p.onPropose(confirmed.zone)}>Propose as public zone</Button>}
     </>
   )
 }
@@ -424,86 +342,13 @@ function DoorCard({
   )
 }
 
-function OptionCard({
-  option,
-  rank,
-  selected,
-  verb,
-  drive,
-  saved,
-  slope,
-  arriveBy,
-  onSelect,
-  onConfirm,
-}: {
-  option: StopOption
-  rank: number
-  selected: boolean
-  verb: string
-  drive?: Props['drive']
-  saved?: number
-  slope?: Slope
-  arriveBy?: string
-  onSelect: () => void
-  onConfirm: () => void
-}) {
+function stopChoice(option: StopOption, drive?: Props['drive']): StopChoice {
   const { zone } = option
-  // Once selected, the AI curb check below replaces the generic "unchecked" warning.
-  const warnings = selected ? option.warnings.filter((w) => w !== GENERATED_WARNING) : option.warnings
-  const personal = zone.source === 'personal'
-  return (
-    <li>
-      <div
-        role="button"
-        tabIndex={0}
-        aria-expanded={selected}
-        onClick={onSelect}
-        onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && onSelect()}
-        className={cx(
-          'rounded-2xl border bg-raised px-4 py-3.5 transition-colors',
-          selected ? 'cursor-default border-selected bg-selected/[0.06]' : 'cursor-pointer border-line hover:border-high',
-        )}
-      >
-        <div className="flex items-center justify-between text-xs font-bold">
-          <span className={selected ? 'text-selected' : 'text-muted'}>
-            {rank === 0 ? 'Best' : `Option ${rank + 1}`}
-            {personal && <span className="ml-2 rounded-full bg-personal/15 px-2 py-0.5 text-personal">Mine</span>}
-          </span>
-          <span>{formatWalk(option.walkSeconds)}</span>
-        </div>
-        <h3 className="mb-0 mt-1.5 text-base font-bold tracking-tight">{zone.name}</h3>
-        <p className="m-0 mt-0.5 text-sm text-muted">→ {option.entrance.label}</p>
-        <p className="m-0 mt-2 text-sm">{option.reason}</p>
-        <SavedBadge seconds={saved} />
-        {drive && (
-          <p className="m-0 mt-2 text-sm font-semibold text-accent">
-            <CarIcon size={16} className="mr-1.5 inline -translate-y-px" />
-            {formatDrive(drive.seconds)} from {drive.from}
-          </p>
-        )}
-        {warnings.length > 0 && (
-          <ul className="m-0 mt-2.5 flex list-none flex-wrap gap-1.5 p-0">
-            {warnings.map((w) => (
-              <li key={w} className="rounded-full bg-selected/15 px-2.5 py-0.5 text-xs font-bold text-selected">
-                {w}
-              </li>
-            ))}
-          </ul>
-        )}
-        {selected && (
-          <div className="mt-3.5 flex flex-col gap-2.5" onClick={(e) => e.stopPropagation()}>
-            {arriveBy && <ArriveBy hhmm={arriveBy} driveSeconds={drive?.seconds} walkSeconds={option.walkSeconds} />}
-            <CurbCheck stop={zone.stopPoint} door={option.entrance.location} />
-            <SlopeBadge slope={slope} />
-            <StreetViewPreview target={zone.stopPoint} />
-            <Button variant="primary" onClick={onConfirm}>
-              Set {verb} here
-            </Button>
-          </div>
-        )}
-      </div>
-    </li>
-  )
+  return { name: zone.name, stopPoint: zone.stopPoint, walkSeconds: option.walkSeconds,
+    destinationLabel: option.entrance.label, reason: option.reason, instructions: zone.instructions,
+    badge: zone.source === 'public' ? `${zone.publicStopStatus === 'VERIFIED' ? 'Verified' : 'Unverified'} public stop`
+      : zone.source === 'personal' ? 'Saved stop' : zone.source === 'generated' ? 'Suggested stop' : 'Default zone',
+    personal: zone.source === 'personal', warnings: option.warnings, drive: drive && { seconds: drive.seconds, from: drive.from } }
 }
 
 function Confirmed({
@@ -533,39 +378,12 @@ function Confirmed({
 }) {
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string>()
-  const { zone } = option
-  const coords = `${zone.stopPoint.lat.toFixed(6)}, ${zone.stopPoint.lng.toFixed(6)}`
 
   return (
-    <div className="flex flex-col gap-3 rounded-2xl border border-accent/40 bg-accent/10 p-4">
-      <p className="m-0 text-xs font-bold text-accent">{kind === 'dropoff' ? 'Drop-off set' : 'Pickup set'}</p>
-      <h3 className="m-0 text-lg font-extrabold tracking-tight">
-        Your car will {kind === 'dropoff' ? 'stop' : 'meet you'} at the {zone.name.toLowerCase()} by {option.entrance.label}
-      </h3>
-      <p className="m-0 text-sm">
-        {drive && (
-          <>
-            <CarIcon size={16} className="mr-1 inline -translate-y-px text-accent" />
-            {formatDrive(drive.seconds)} ·{' '}
-          </>
-        )}
-        <WalkIcon size={16} className="mr-1 inline -translate-y-px text-accent" />
-        {formatWalk(option.walkSeconds)} {kind === 'dropoff' ? 'to the door' : 'from the door'}
-      </p>
+    <StopConfirmation option={stopChoice(option, drive)} kind={kind} onChange={onChange}>
       {arriveBy && <ArriveBy hhmm={arriveBy} driveSeconds={drive?.seconds} walkSeconds={option.walkSeconds} />}
       <SlopeBadge slope={slope} />
-      <p className="m-0 font-mono text-xs text-muted">{coords}</p>
-      <div className="flex gap-2">
-        <Button className="flex-1" onClick={onChange}>
-          Change
-        </Button>
-        <Button variant="primary" className="flex-[2]" onClick={onStart}>
-          {kind === 'dropoff' ? 'Start trip' : 'Walk to pickup'}
-        </Button>
-      </div>
-      {option.warnings.some((w) => w !== GENERATED_WARNING) && (
-        <Notice>{option.warnings.filter((w) => w !== GENERATED_WARNING).join(' ')}</Notice>
-      )}
+      <Button variant="primary" onClick={onStart}>{kind === 'dropoff' ? 'Start trip' : 'Walk to pickup'}</Button>
       {error && <Notice tone="error">{error}</Notice>}
       {user && (
         <div className="border-t border-line pt-3">
@@ -610,6 +428,6 @@ function Confirmed({
           )}
         </div>
       )}
-    </div>
+    </StopConfirmation>
   )
 }

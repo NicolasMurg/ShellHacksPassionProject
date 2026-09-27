@@ -48,6 +48,7 @@ model User {
   id           String             @id @default(auto()) @map("_id") @db.ObjectId
   name         String
   email        String             @unique
+  role         String             @default("USER")
   passwordHash String?
   stops        PersonalStop[]
   sessions     Session[]
@@ -84,13 +85,14 @@ model Entrance {
 }
 
 model Zone {
-  id String @id @map("_id")
+  id String @id @default(uuid()) @map("_id")
 
-  buildingId String
-  building   Building @relation(fields: [buildingId], references: [id])
+  buildingId String?
+  building   Building? @relation(fields: [buildingId], references: [id])
 
-  entranceId String   @db.ObjectId
-  entrance   Entrance @relation(fields: [entranceId], references: [id])
+  // Historical association only; routing evaluates every relevant entrance.
+  entranceId String?   @db.ObjectId
+  entrance   Entrance? @relation(fields: [entranceId], references: [id])
 
   name   String
   kinds  ZoneKind[]
@@ -99,7 +101,7 @@ model Zone {
   polygon   GeoPoint[]
   stopPoint GeoPoint
 
-  rooms String[]
+  rooms String[] @default([])
 
   ownerId String? @db.ObjectId
   owner   User?   @relation(fields: [ownerId], references: [id])
@@ -107,6 +109,26 @@ model Zone {
   basedOnZoneId String?
   hidden        Boolean @default(false)
 
+  instructions          String             @default("")
+  placeId               String?
+  origin                String             @default("manual")
+  submittedBy           String?            @db.ObjectId
+  photoUrl              String?
+  status                PublicStopStatus   @default(UNVERIFIED)
+  access                StopAccess         @default(UNKNOWN)
+  accessibility         StopAccessibility  @default(UNKNOWN)
+  confirmations         StopConfirmation[]
+  reports               StopReport[]
+  reviews               StopReview[]
+  verifiedBy            String?            @db.ObjectId
+  verifiedAt            DateTime?
+  verificationExpiresAt DateTime?
+  revision              Int                @default(0)
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  @@index([status, verificationExpiresAt])
+  @@index([submittedBy])
   @@index([buildingId])
   @@index([entranceId])
   @@index([ownerId])
@@ -181,4 +203,48 @@ model PersonalStop {
 
   @@unique([ownerId, destinationKey])
   @@index([ownerId])
+}
+
+enum PublicStopStatus {
+  UNVERIFIED
+  VERIFIED
+  DISPUTED
+  RETIRED
+}
+
+enum StopAccess {
+  UNKNOWN
+  PERMITTED
+  RESTRICTED
+}
+
+enum StopAccessibility {
+  UNKNOWN
+  STEP_FREE
+  NOT_STEP_FREE
+}
+
+type StopConfirmation {
+  userId         String
+  createdAt      DateTime
+  distanceMeters Float
+}
+
+type StopReport {
+  id         String
+  userId     String
+  category   String
+  details    String
+  createdAt  DateTime
+  resolvedAt DateTime?
+}
+
+type StopReview {
+  actorId       String?
+  actorName     String
+  status        PublicStopStatus
+  notes         String
+  access        StopAccess
+  accessibility StopAccessibility
+  createdAt     DateTime
 }

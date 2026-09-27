@@ -9,6 +9,8 @@ import { googleRoutes } from "./google";
 import { arrivalRoutes } from "./arrivals";
 import { aiRoutes } from "./ai";
 
+import { publicStopRoutes } from "./publicStops";
+
 const router = Router();
 router.get("/", (_req, res) => { res.json({ message: "Welcome to the API" }); });
 router.get("/health", (_req, res) => { res.json({ status: "ok" }); });
@@ -21,4 +23,5 @@ router.use("/closures", closureRoutes);
 router.use(googleRoutes);
 router.use(arrivalRoutes);
 router.use("/ai", aiRoutes);
+router.use("/public-stops", publicStopRoutes);
 export default router;

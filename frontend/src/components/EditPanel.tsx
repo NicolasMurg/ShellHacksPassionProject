@@ -103,15 +103,14 @@ function DefaultZoneCard({
   onCustomize: (z: Zone) => void
   onHide: (z: Zone) => void
 }) {
-  const door = building.entrances.find((e) => e.id === zone.entranceId)
   return (
     <div className="flex flex-col gap-3 rounded-2xl border border-shared/40 bg-shared/5 p-4">
       <div>
         <p className="m-0 text-xs font-bold text-shared">
-          {zone.source === 'generated' ? 'Auto-generated curb' : 'Design team zone'} · {building.name}
+          {zone.source === 'generated' ? 'Suggested curb' : 'Public zone'} · {building.name}
         </p>
         <h3 className="m-0 mt-1 text-base font-bold">{zone.name}</h3>
-        {door && <p className="m-0 text-sm text-muted">→ {door.label}</p>}
+        <p className="m-0 text-sm text-muted">The planner chooses the fastest suitable entrance.</p>
       </div>
       <p className="m-0 text-sm">Make your own copy to move or reshape it. Everyone else keeps seeing the original.</p>
       <div className="flex gap-2">
@@ -157,10 +156,6 @@ function ZoneForm({
   const building = buildings.find((b) => b.id === zone.buildingId) ?? byDistance[0]
   const nearby = byDistance.slice(0, 8)
   const choices = nearby.includes(building) ? nearby : [building, ...nearby]
-  const doors = [...(building?.entrances ?? [])].sort(
-    (a, b) => distanceMeters(zone.stopPoint, a.location) - distanceMeters(zone.stopPoint, b.location),
-  )
-
   const pickBuilding = (id: string) => {
     const next = buildings.find((b) => b.id === id)
     if (!next) return
@@ -193,18 +188,7 @@ function ZoneForm({
           ))}
         </select>
       </Field>
-      {doors.length > 1 && (
-        <Field label="Walk me to" hint="DoorStep guides you from the car to this door. The closest one is picked for you.">
-          <select className={inputClass} value={zone.entranceId} onChange={(e) => onChange({ ...zone, entranceId: e.target.value })}>
-            {doors.map((d, i) => (
-              <option key={d.id} value={d.id}>
-                {d.label}
-                {i === 0 ? ' (closest)' : ''} · {away(zone.stopPoint, d.location)}
-              </option>
-            ))}
-          </select>
-        </Field>
-      )}
+      <p className="m-0 text-sm text-muted">This zone serves the building as a whole. Each trip uses the fastest suitable entrance.</p>
       <div className="flex flex-wrap gap-x-5">
         {KINDS.map((k) => (
           <Switch key={k.value} checked={zone.kinds.includes(k.value)} onChange={(on) => toggleKind(k.value, on)} label={k.label} />

@@ -117,7 +117,7 @@ room prefixes and trip kinds, and calculates actual Google walking-path lengths
 before ranking. The walking model adjusts those lengths for pace, age, height,
 mobility, learned factor, and approximate indoor/floor time. Step-free requests
 and wheelchair/stroller profiles exclude entrances marked inaccessible. Maximum
-walk time is enforced; nearby reports add penalties and warnings. Unreachable
+walk time is enforced; applicable closure intersections exclude stopping routes. Unreachable
 candidates are skipped; provider/configuration failures return explicit errors.
 
 Closure geometry is used to flag proximity to the start point; this does not
@@ -136,3 +136,116 @@ route selection run on the server. Google route content is not stored in trips.
 
 References: [Routes API](https://developers.google.com/maps/documentation/routes/reference/rest/v2/TopLevel/computeRoutes),
 [Places Text Search](https://developers.google.com/maps/documentation/places/web-service/text-search).
+
+
+## Public stops and verification
+
+Public submissions, confirmations, reports, and review history live in the MongoDB
+`Zone` collection alongside generated, design, and private zones. `/public-stops` remains a compatibility API over shared Zone records. Private arrival preferences remain in PersonalStop.
+After reviewing the deployment target, apply the additive schema with `bun run db:push`
+(no `--accept-data-loss`), then restart the API after `bun run db:generate`.
+
+All accounts default to `USER`. To appoint a reviewer, first register the account,
+then run this explicit server-side command from `backend`:
+
+```bash
+bun run db:admin reviewer@example.com
+# Revoke reviewer permissions:
+bun run db:admin reviewer@example.com --revoke
+```
+
+Refresh the app after a role change. Every protected request reads the current
+server-side role; registration and profile updates cannot assign roles. Administrators
+cannot verify their own submissions. Use separate submitter and reviewer accounts
+for the demo. Institution/property-manager identity verification is not automated.
+
+Endpoints:
+
+- `GET /api/public-stops`: public list, 100 per page; pass `before=nextCursor`.
+- `GET /api/public-stops?review=true`: admin queue of unverified/disputed/expired stops.
+- `GET /api/public-stops?retired=true`: admin list including retired stops.
+- `GET /api/public-stops/:id`: stop detail and public history.
+- `POST /api/public-stops`: signed-in submission with name, instructions, GeoJSON
+  location, `kinds` (`DROPOFF`/`PICKUP`), and optional HTTPS `photoUrl`.
+- `POST /api/public-stops/:id/confirm`: signed-in confirmation with fresh GPS
+  location, accuracy <=50 meters, and timestamp <=2 minutes old. Distance plus
+  accuracy must be <=100 meters. One confirmation per account per stop; submitters
+  cannot confirm their own stop. Coordinates are not retained in confirmations.
+- `POST /api/public-stops/:id/reports`: category and details; one unresolved report
+  per account. Categories: `MISPLACED`, `INACCESSIBLE`, `PRIVATE_PROPERTY`, `CLOSED`,
+  `UNSAFE`, `OTHER`. A report immediately marks the stop `DISPUTED` and clears its
+  current access/accessibility assurances without deleting previous evidence.
+- `POST /api/public-stops/:id/review`: admin-only status, access, accessibility,
+  evidence notes (10+ characters), current `revision`, and `validDays` (1–180; default
+  90). A stale revision returns 409 rather than overwriting newer evidence.
+
+Statuses: `UNVERIFIED`, `VERIFIED`, `DISPUTED`, `RETIRED`. Access and accessibility
+are independent: verification requires `PERMITTED` public stopping, while step-free
+access can remain `UNKNOWN`. Resolving a dispute preserves its report and records
+its resolution date plus reviewer evidence. New reports can reopen a verified stop.
+Retired stops leave the public list but remain available to administrators/history.
+
+Verified stops expire on their next read and receive a System audit entry; arrival
+planning immediately downgrades expired verification to an Unverified preview, even before any list refresh.
+There is no scheduled expiration worker. `destination.publicStopId` in arrival
+planning rechecks status, expiry, public access, trip type, and required accessibility,
+then uses server-owned coordinates. Public-stop review does not certify Google’s
+entire walking route or any road-arrival pin adjustment.
+
+The MVP caps confirmations/reports at 1,000 each per stop, limits mutations to 30
+per account per minute, and uses an atomic revision check on every update. Nearby
+GPS and distinct accounts are supporting evidence, not proof of identity or physical
+presence; no automatic promotion follows from votes. Photo evidence is an optional
+external HTTPS link (not file uploads). Reports, review notes, and reviewer display
+names are public; confirmer/reporter account IDs and GPS observations are not.
+
+`bun run test` exercises this workflow in an isolated MongoDB replica set, including
+race conditions, role revocation, GPS validation, expiry, and route eligibility.
+
+
+### Unified zones and routing
+
+Zone is the single stored model for generated suggestions, public stopping spots,
+and private zones. A zone has a stopPoint, optional polygon (empty for point-only
+spots), optional buildingId/placeId, and review/access/accessibility history.
+entranceId and rooms remain for old references but do not constrain routing.
+Building association is descriptive; eligible nearby destinations can reuse a zone.
+
+Both planners discover all eligible shared zones within 500 m, without a five-stop
+limit. Campus planning also loads associated building zones, merges private
+replacements, filters entrances by room/accessibility, then evaluates every
+zone–entrance combination in batches of three. Routes over 500 m or crossing
+applicable restrictions are excluded. It returns the fastest entrance per zone,
+ranked by walking time (with an accessible-entrance preference when requested).
+Pickup walks run entrance → stop; drop-offs run stop → entrance. Arrival planning
+ranks by walking time too; a manually moved pin overrides automatic discovery.
+Generated suggestions and community proposals remain unverified. Step-free-only
+plans require currently verified STEP_FREE zones and suitable entrances.
+
+POST /api/public-stops accepts optional buildingId, placeId, polygon, origin
+(manual/suggestion), and suggestedZoneId. A generated zone is promoted in place:
+its ID, point, boundary and building association survive. New proposals get a Zone
+record with UNVERIFIED status; only administrator review grants verification.
+Repeated same-name proposals within 15 m return the existing zone. The creation
+UI also offers nearby existing zones before submission. Private zones cannot be
+promoted by another account or fetched through public endpoints.
+
+### Upgrade an existing database
+
+Stop older backend processes before the migration so they cannot write to the
+legacy PublicStop collection. From backend/ run:
+
+```sh
+bun run db:generate
+bun run db:unify-zones          # read-only counts
+bun run db:unify-zones --apply  # additive backfill/import
+bun run db:zone-indexes        # add two non-unique indexes; no drops
+```
+
+The migration preserves Zone IDs, imports legacy ObjectIds as equivalent string
+IDs, and keeps ownership, review evidence, statuses and timestamps. Existing zone
+metadata is filled only when absent. PublicStop is retained as a legacy archive;
+the application no longer reads or writes it. Reruns skip previously imported
+records and preserve subsequent edits. Review dry-run counts before applying.
+Existing clients can continue using /public-stops and publicStopId; both refer to
+Zone IDs. Updating the Prisma schema alone does not migrate existing records.

@@ -10,10 +10,13 @@ import {
   useMap,
 } from '@vis.gl/react-google-maps'
 import { useEffect, useId, useRef, useState } from 'react'
+import { PublicStopPin } from './PublicStopPin'
 import { CAMPUS_CENTER } from '../data/mapDefaults'
 import { centroid, distanceMeters, splitPath } from '../geo'
 import { MAP_STYLES, type MapLayers } from '../mapLayers'
 import { CarIcon, DoorIcon, WheelchairIcon } from './icons'
+import type { PublicStop } from '../api'
+import type { LearnedPath, WalkPoint } from '../walkedPaths'
 import type { Building, Entrance, LatLng, RoadClosure, Zone } from '../types'
 import { GridLayer } from './GridLayer'
 import { PaintLayer, type Paint } from './PaintLayer'
@@ -30,7 +33,7 @@ const COLOR = {
   me: '#4c8dff',
 }
 
-export type Tool = 'none' | 'addZone' | 'drawClosure' | 'paintZone' | 'placeDoor'
+export type Tool = 'none' | 'addZone' | 'drawClosure' | 'paintZone' | 'placeDoor' | 'addPublicStop' | 'drawPublicBoundary'
 
 /** Doorways on the grid, and the links (shortcuts through buildings) between them. */
 export type DoorwayMarks = {
@@ -41,6 +44,15 @@ export type DoorwayMarks = {
 }
 
 type Props = {
+  publicStops: PublicStop[]
+  nearbyPublicStops: Pick<PublicStop, 'id' | 'name' | 'location' | 'status'>[]
+  activePublicStopId?: string
+  publicBoundary: LatLng[]
+  publicStopDraft?: LatLng
+  selectedPublicStopId?: string
+  onSelectPublicStop: (stop: Pick<PublicStop, 'id' | 'name' | 'location'>) => void
+  learnedPaths: LearnedPath[]
+  liveWalk: WalkPoint[]
   buildings: Building[]
   entrances: globalThis.Map<string, Entrance>
   zones: Zone[]
@@ -84,13 +96,16 @@ export function MapCanvas(props: Props) {
   const { mapTypeId, colorScheme } = MAP_STYLES[layers.style]
   const start = useStartCamera(colorScheme, layers.threeD)
   useThreeD(layers.threeD)
-  const selectedEntranceId = selected?.entranceId ?? props.focusEntranceId
+  const selectedEntranceId = props.focusEntranceId ?? selected?.entranceId
 
   // In walk mode also fit where the walk starts (demo start, or you).
   const walkOrigin = props.walkMode ? (props.start?.location ?? me?.position) : undefined
+  const publicMarkers = [...props.publicStops, ...props.nearbyPublicStops.filter(stop => !props.publicStops.some(s => s.id === stop.id))]
+  const activePublicStop = publicMarkers.find(stop => stop.id === props.activePublicStopId)
+  const selectedPublicStop = props.publicStops.find(stop => stop.id === props.selectedPublicStopId)
   const navigating = !!props.nav
   // While navigating the camera follows you (useFollow) instead of framing the destination.
-  useFitTo(navigating ? undefined : destination, walkOrigin)
+  useFitTo(navigating ? undefined : selectedPublicStop ? { ...selectedPublicStop, code: '', entrances: [] } : destination, walkOrigin)
   // Runs after useFitTo so a new typed address shows the whole trip first.
   useFitTrip(props.start?.typed && !navigating ? props.start.location : undefined, destination)
   useFollow(props.nav?.position, navigating && props.follow)
@@ -98,8 +113,7 @@ export function MapCanvas(props: Props) {
 
   // Car markers only where they help: the destination's zones, or your own zones while editing.
   const showStopFor = (z: Zone) =>
-    !props.walkMode &&
-    (z.id === selectedZoneId || z.id === editingZoneId || z.buildingId === destination?.id || (editMode && z.source === 'personal'))
+    !props.walkMode && !z.publicStopId && (!editMode || z.id === editingZoneId || z.source === 'personal')
 
   // Doors: the destination's, plus the selected zone's.
   const doors = [
@@ -174,7 +188,20 @@ export function MapCanvas(props: Props) {
       })}
       {props.paint && <PaintLayer {...props.paint} />}
 
+      {!editMode && tool === 'none' && publicMarkers.map(stop => <AdvancedMarker key={`public:${stop.id}`} position={stop.location}
+        zIndex={stop.id === props.selectedPublicStopId || stop.id === props.activePublicStopId ? 60 : 15}
+        title={`${stop.name} · ${stop.status.toLowerCase()} public stop`}
+        onClick={() => props.onSelectPublicStop(stop)}>
+        <PublicStopPin name={stop.name} status={stop.status} selected={stop.id === props.selectedPublicStopId || stop.id === props.activePublicStopId} />
+      </AdvancedMarker>)}
+      {props.publicBoundary.length >= 3 && <Polygon paths={props.publicBoundary} fillColor={COLOR.shared} fillOpacity={0.2} strokeColor={COLOR.shared} clickable={false} />}
+      {props.publicBoundary.map((point, index) => <AdvancedMarker key={`boundary:${index}`} position={point}><span className="block size-2 rounded-full bg-accent" /></AdvancedMarker>)}
+      {props.publicStopDraft && <AdvancedMarker position={props.publicStopDraft} zIndex={60}>
+        <PublicStopPin name="New public stop" status="UNVERIFIED" selected />
+      </AdvancedMarker>}
+
       {!destination &&
+        tool === 'none' &&
         !editMode &&
         !navigating &&
         buildings.map((b) => (
@@ -194,7 +221,7 @@ export function MapCanvas(props: Props) {
       {destination && !editMode && !navigating && (
         <AdvancedMarker position={destination.location} zIndex={1}>
           <div className="rounded-full bg-[#3a3f48] px-2.5 py-1.5 text-[11px] font-bold text-[#c9ced6] opacity-90" title="Your destination">
-            Destination
+            {destination.name}
           </div>
         </AdvancedMarker>
       )}
@@ -220,11 +247,23 @@ export function MapCanvas(props: Props) {
         </>
       )}
 
-      {props.arrivalStop && !editMode && !navigating && <AdvancedMarker position={props.arrivalStop} zIndex={50}
+      {props.arrivalStop && !editMode && !navigating && (!activePublicStop || props.movingArrival || distanceMeters(activePublicStop.location, props.arrivalStop) > 8) && <AdvancedMarker position={props.arrivalStop} zIndex={50}
         draggable={props.movingArrival} title={props.movingArrival ? 'Drag to move the stop' : 'Suggested stopping point'}
         onDragEnd={e => { const p = e.latLng?.toJSON(); if (p) props.onMoveArrival(p) }}>
         <div className="pin-stop" style={{ borderColor: COLOR.selected, background: COLOR.selected, color: '#04201e' }}><CarIcon size={20} /></div>
       </AdvancedMarker>}
+
+      {!editMode && props.learnedPaths.map(({ trace, walks }) => (
+        <Polyline key={trace.id} path={trace.points} strokeColor={walks >= 2 ? '#a78bfa' : '#60a5fa'}
+          strokeWeight={walks >= 2 ? 6 : 4} strokeOpacity={0.8} clickable={false} zIndex={5} />
+      ))}
+      {!editMode && props.learnedPaths.flatMap(({ trace, walks }) => trace.points.slice(1).flatMap((point, index) =>
+        point.offRoute && trace.points[index].offRoute ? [
+          <Polyline key={`${trace.id}:${index}`} path={[trace.points[index], point]} strokeColor="#ffb547"
+            strokeWeight={walks >= 2 ? 7 : 4} strokeOpacity={0.9} clickable={false} zIndex={6} />,
+        ] : []))}
+      {!editMode && props.liveWalk.length >= 2 && <Polyline path={props.liveWalk} strokeColor="#60a5fa"
+        strokeWeight={3} strokeOpacity={0.9} clickable={false} zIndex={7} />}
 
       {/* Car route: you → curb */}
       {props.drivePath && !editMode && !navigating && (

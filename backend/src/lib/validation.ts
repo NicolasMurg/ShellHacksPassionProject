@@ -18,9 +18,9 @@ export const profile = z.object({
 export const defaultProfile = { avoidStairs: false, requireCurbCuts: false,
   avoidSteepSlopes: false, maxWalkMinutes: null, preferAccessibleEntrances: false, pace: "average", mobility: "none", learnedFactor: 1 };
 export const zoneInput = z.object({
-  buildingId: id, entranceId: objectId, name: z.string().trim().min(1).max(200),
+  buildingId: id.nullable().optional(), entranceId: objectId.nullable().optional(), name: z.string().trim().min(1).max(200),
   kinds: z.array(z.enum(["DROPOFF", "PICKUP", "BOTH"])).min(1).max(3),
-  polygon: z.array(point).min(3).max(200), stopPoint: point,
+  polygon: z.array(point).max(200).refine(p => !p.length || p.length >= 3), stopPoint: point,
   rooms: z.array(z.string().trim().min(1).max(100)).max(100), hidden: z.boolean().optional(),
 }).strict();
 export const restrictionInput = z.object({

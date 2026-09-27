@@ -33,6 +33,9 @@
     "db:seed": "bun db/seed.ts",
     "test": "bun test --timeout 120000",
     "seed": "bun db/seed.ts",
-    "db:curbs": "bun db/generate-curbs.ts"
+    "db:curbs": "bun db/generate-curbs.ts",
+    "db:zone-indexes": "bun db/zone-indexes.ts",
+    "db:unify-zones": "bun db/unify-zones.ts",
+    "db:admin": "bun db/set-admin.ts"
   }
 }

@@ -24,8 +24,8 @@ authRoutes.post("/login", async (req, res) => {
   const user = await prisma.user.findUnique({ where: { email: data.email } });
   const valid = await Bun.password.verify(data.password, user?.passwordHash ?? await dummyHash);
   if (!user?.passwordHash || !valid) throw new HttpError(401, "Invalid email or password");
-  const { id, name, email, profile } = user;
-  res.json({ user: { id, name, email, profile }, ...await createSession(id) });
+  const { id, name, email, profile, role } = user;
+  res.json({ user: { id, name, email, profile, role }, ...await createSession(id) });
 });
 authRoutes.post("/logout", requireAuth, async (_req, res) => {
   await prisma.session.deleteMany({ where: { id: res.locals.sessionId } });
